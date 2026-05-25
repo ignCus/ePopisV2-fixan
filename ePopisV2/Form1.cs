@@ -668,6 +668,21 @@ namespace ePopisV2
 
         private async void btnZavrsiSmenu_Click(object sender, EventArgs e)
         {
+            // Ensure mandatory fields are filled (accept '0' as valid input but field must not be empty)
+            var missing = new System.Collections.Generic.List<string>();
+            if (string.IsNullOrWhiteSpace(kazino.Text)) missing.Add("Kazino");
+            if (string.IsNullOrWhiteSpace(kladionica.Text)) missing.Add("Kladionica");
+            if (string.IsNullOrWhiteSpace(lbet.Text)) missing.Add("L-Bet Saldo");
+            if (string.IsNullOrWhiteSpace(sank.Text)) missing.Add("Šank");
+            if (string.IsNullOrWhiteSpace(txtBrojGostijuAparati.Text)) missing.Add("Broj gostiju - Aparati");
+            if (string.IsNullOrWhiteSpace(txtBrojGostijuKladionica.Text)) missing.Add("Broj gostiju - Kladionica");
+            if (string.IsNullOrWhiteSpace(txtBrojGostijuOnlineDepozit.Text)) missing.Add("Broj gostiju - Online Depozit");
+            if (missing.Count > 0)
+            {
+                MessageBox.Show("Nisu unesena sledeća obavezna polja:\n" + string.Join(", ", missing) + "\n\nMolimo unesite vrednost (ako nema, upišite 0).", "Obavezna polja", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             if (!string.IsNullOrWhiteSpace(dopuna.Text) && GetValue(dopuna) > 0 && !dopunaOdobrena) { MessageBox.Show("Greška: Uneli ste iznos za Dopunu Depozita, ali niste odradili autorizaciju preko ključa!", "Autorizacija neophodna", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
             if (!string.IsNullOrWhiteSpace(podizanje.Text) && GetValue(podizanje) > 0 && !podizanjeOdobreno) { MessageBox.Show("Greška: Uneli ste iznos za Podizanje Depozita, ali niste odradili autorizaciju preko ključa!", "Autorizacija neophodna", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
             if (!string.IsNullOrWhiteSpace(troskovi.Text) && GetValue(troskovi) > 0) { MessageBox.Show("Greška: Uneli ste iznos za Troškove, ali niste odradili autorizaciju preko ključa!", "Autorizacija neophodna", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
