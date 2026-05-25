@@ -2,6 +2,8 @@
 using System.IO;
 using System.Windows.Forms;
 using System.Linq;
+using System.Threading;
+using System.Drawing.Printing;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
@@ -9,6 +11,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Drawing;
 using System.Text.Json;
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using Microsoft.Win32;
@@ -565,7 +568,7 @@ namespace ePopisV2
             label3.Text = "Utvrdjeni depozit:"; label3.Location = new Point(15, startY); label3.Size = new Size(labelWidth, 28);
             utvrdjeniDepozit.Location = new Point(textBoxX, startY); utvrdjeniDepozit.Size = new Size(textBoxWidth, 28); utvrdjeniDepozit.BackColor = Color.FromArgb(55, 65, 81); utvrdjeniDepozit.ForeColor = Color.White; utvrdjeniDepozit.BorderStyle = BorderStyle.FixedSingle; utvrdjeniDepozit.ReadOnly = true;
 
-            label11.Text = "Depozit (Pazar):"; label11.Location = new Point(15, startY + spacing); label11.Size = new Size(labelWidth, 28);
+            label11.Text = "Šank (Pazar):"; label11.Location = new Point(15, startY + spacing); label11.Size = new Size(labelWidth, 28);
             depozit.Location = new Point(textBoxX, startY + spacing); depozit.Size = new Size(textBoxWidth, 28); depozit.BackColor = Color.FromArgb(55, 65, 81); depozit.ForeColor = Color.White; depozit.BorderStyle = BorderStyle.FixedSingle; depozit.ReadOnly = true;
 
             label18.Text = "Stanje na kraju:"; label18.Location = new Point(15, startY + spacing * 2); label18.Size = new Size(labelWidth, 28);
@@ -1558,6 +1561,11 @@ namespace ePopisV2
                 string fileName = $"Dnevni_Izvestaj_{dateTimePicker1.Value.ToString("dd_MM_yyyy")}.html";
                 string path = Path.Combine(monthlyFolder, fileName);
 
+                // Compute fresh pazar values (do not modify original parsed ones) for use in the HTML tables
+                decimal computedPazar1 = ParsirajBrojIzStringa(p1.Length > 5 ? p1[5] : "0") + ParsirajBrojIzStringa(p1.Length > 6 ? p1[6] : "0") + ParsirajBrojIzStringa(p1.Length > 7 ? p1[7] : "0") + ParsirajBrojIzStringa(p1.Length > 9 ? p1[9] : "0") + ParsirajBrojIzStringa(p1.Length > 10 ? p1[10] : "0") + ParsirajBrojIzStringa(p1.Length > 11 ? p1[11] : "0");
+                decimal computedPazar2 = ParsirajBrojIzStringa(p2.Length > 5 ? p2[5] : "0") + ParsirajBrojIzStringa(p2.Length > 6 ? p2[6] : "0") + ParsirajBrojIzStringa(p2.Length > 7 ? p2[7] : "0") + ParsirajBrojIzStringa(p2.Length > 9 ? p2[9] : "0") + ParsirajBrojIzStringa(p2.Length > 10 ? p2[10] : "0") + ParsirajBrojIzStringa(p2.Length > 11 ? p2[11] : "0");
+                decimal ukupnoPazarComputed = computedPazar1 + computedPazar2;
+
                 StringBuilder html = new StringBuilder();
 
                 html.AppendLine("<!DOCTYPE html>");
@@ -1589,7 +1597,7 @@ namespace ePopisV2
 
                 // ========== PRVA SMENA ==========
                 html.AppendLine("<h2>🕒 PRVA SMENA (DAN)</h2>");
-                html.AppendLine($"<h3>👤 <strong>Radnik:</strong> {p1[1]} &nbsp;&nbsp;|&nbsp;&nbsp; 📍 <strong>Lokal:</strong> {p1[2]} ({p1[3]}) &nbsp;&nbsp;|&nbsp;&nbsp; 📅 <strong>Vreme popisa:</strong> {p1[0]}</h3>");
+                html.AppendLine($"<h3>👤 <strong>Radnik:</strong> {p1[1]} &nbsp;&nbsp;|&nbsp;&nbsp; 📍 <strong>Adresa:</strong> {p1[2]} &nbsp;&nbsp;|&nbsp;&nbsp; 📍 <strong>Kod lokacije:</strong> {p1[3]} &nbsp;&nbsp;|&nbsp;&nbsp; 📅 <strong>Datum izveštaja:</strong> {p1[0]}</h3>");
 
                 html.AppendLine("<table border='1'>");
                 html.AppendLine("<thead>");
@@ -1619,7 +1627,7 @@ namespace ePopisV2
                 html.AppendLine($"<td>{FormatujBroj(ParsirajBrojIzStringa(p1[9]))} RSD</td>");
                 html.AppendLine($"<td>{FormatujBroj(ParsirajBrojIzStringa(p1[10]))} RSD</td>");
                 html.AppendLine($"<td>{FormatujBroj(ParsirajBrojIzStringa(p1[11]))} RSD</td>");
-                html.AppendLine($"<td><strong>{FormatujBroj(ParsirajBrojIzStringa(p1[12]))} RSD</strong></td>");
+                html.AppendLine($"<td><strong>{FormatujBroj(computedPazar1)} RSD</strong></td>");
                 html.AppendLine($"<td>{FormatujBroj(ParsirajBrojIzStringa(p1[13]))} RSD</td>");
                 html.AppendLine($"<td><strong>{FormatujBroj(ParsirajBrojIzStringa(p1[14]))} RSD</strong></td>");
                 html.AppendLine($"<td>{(p1.Length > 16 ? p1[16] : "0")}</td>");
@@ -1634,7 +1642,7 @@ namespace ePopisV2
 
                 // ========== DRUGA SMENA ==========
                 html.AppendLine("<h2>🕒 DRUGA SMENA (NOĆ)</h2>");
-                html.AppendLine($"<h3>👤 <strong>Radnik:</strong> {p2[1]} &nbsp;&nbsp;|&nbsp;&nbsp; 📍 <strong>Lokal:</strong> {p2[2]} ({p2[3]}) &nbsp;&nbsp;|&nbsp;&nbsp; 📅 <strong>Vreme popisa:</strong> {p2[0]}</h3>");
+                html.AppendLine($"<h3>👤 <strong>Radnik:</strong> {p2[1]} &nbsp;&nbsp;|&nbsp;&nbsp; 📍 <strong>Adresa:</strong> {p2[2]} &nbsp;&nbsp;|&nbsp;&nbsp; 📍 <strong>Kod lokacije:</strong> {p2[3]} &nbsp;&nbsp;|&nbsp;&nbsp; 📅 <strong>Datum izveštaja:</strong> {p2[0]}</h3>");
 
                 html.AppendLine("<table border='1'>");
                 html.AppendLine("<thead>");
@@ -1664,7 +1672,7 @@ namespace ePopisV2
                 html.AppendLine($"<td>{FormatujBroj(ParsirajBrojIzStringa(p2[9]))} RSD</td>");
                 html.AppendLine($"<td>{FormatujBroj(ParsirajBrojIzStringa(p2[10]))} RSD</td>");
                 html.AppendLine($"<td>{FormatujBroj(ParsirajBrojIzStringa(p2[11]))} RSD</td>");
-                html.AppendLine($"<td><strong>{FormatujBroj(ParsirajBrojIzStringa(p2[12]))} RSD</strong></td>");
+                html.AppendLine($"<td><strong>{FormatujBroj(computedPazar2)} RSD</strong></td>");
                 html.AppendLine($"<td>{FormatujBroj(ParsirajBrojIzStringa(p2[13]))} RSD</td>");
                 html.AppendLine($"<td><strong>{FormatujBroj(ParsirajBrojIzStringa(p2[14]))} RSD</strong></td>");
                 html.AppendLine($"<td>{(p2.Length > 16 ? p2[16] : "0")}</td>");
@@ -1696,6 +1704,8 @@ namespace ePopisV2
                 decimal podizanje2 = ParsirajBrojIzStringa(p2[10]);
                 decimal troskovi2 = ParsirajBrojIzStringa(p2[11]);
                 decimal pazar2 = ParsirajBrojIzStringa(p2[12]);
+
+                // (computedPazar1/2/ukupnoPazarComputed are declared earlier)
                 decimal krajnjaKasa2 = ParsirajBrojIzStringa(p2[14]);
 
                 decimal ukupnoKazino = kazino1 + kazino2;
@@ -1706,6 +1716,20 @@ namespace ePopisV2
                 decimal ukupnoPodizanje = podizanje1 + podizanje2;
                 decimal ukupnoTroskovi = troskovi1 + troskovi2 + ukupniTroskoviPrva + ukupniTroskovi;
                 decimal ukupnoPazar = pazar1 + pazar2;
+
+                // Guest totals (safely parse if indices missing)
+                int guestA1 = p1.Length > 16 ? (int)ParsirajBrojIzStringa(p1[16]) : 0;
+                int guestK1 = p1.Length > 17 ? (int)ParsirajBrojIzStringa(p1[17]) : 0;
+                int guestO1 = p1.Length > 18 ? (int)ParsirajBrojIzStringa(p1[18]) : 0;
+
+                int guestA2 = p2.Length > 16 ? (int)ParsirajBrojIzStringa(p2[16]) : 0;
+                int guestK2 = p2.Length > 17 ? (int)ParsirajBrojIzStringa(p2[17]) : 0;
+                int guestO2 = p2.Length > 18 ? (int)ParsirajBrojIzStringa(p2[18]) : 0;
+
+                int totalGuestsAparati = guestA1 + guestA2;
+                int totalGuestsKladionica = guestK1 + guestK2;
+                int totalGuestsOnline = guestO1 + guestO2;
+                int totalGuestsDay = totalGuestsAparati + totalGuestsKladionica + totalGuestsOnline;
 
                 decimal teoretskoStanje = pocetnaKasa1 + ukupnoPazar;
                 decimal razlika = krajnjaKasa2 - teoretskoStanje;
@@ -1723,6 +1747,10 @@ namespace ePopisV2
                 html.AppendLine("<th>Podizanje</th>");
                 html.AppendLine("<th>Troškovi</th>");
                 html.AppendLine("<th>UKUPAN PAZAR</th>");
+                html.AppendLine("<th>Aparati</th>");
+                html.AppendLine("<th>Kladionica</th>");
+                html.AppendLine("<th>Online Dep.</th>");
+                html.AppendLine("<th>Ukupno Gostiju</th>");
                 html.AppendLine("</tr>");
                 html.AppendLine("</thead>");
                 html.AppendLine("<tbody>");
@@ -1734,7 +1762,11 @@ namespace ePopisV2
                 html.AppendLine($"<td>{FormatujBroj(ukupnoDopuna)} RSD</td>");
                 html.AppendLine($"<td>{FormatujBroj(ukupnoPodizanje)} RSD</td>");
                 html.AppendLine($"<td>{FormatujBroj(ukupnoTroskovi)} RSD</td>");
-                html.AppendLine($"<td><strong>{FormatujBroj(ukupnoPazar)} RSD</strong></td>");
+                html.AppendLine($"<td><strong>{FormatujBroj(ukupnoPazarComputed)} RSD</strong></td>");
+                html.AppendLine($"<td>{totalGuestsAparati}</td>");
+                html.AppendLine($"<td>{totalGuestsKladionica}</td>");
+                html.AppendLine($"<td>{totalGuestsOnline}</td>");
+                html.AppendLine($"<td><strong>{totalGuestsDay}</strong></td>");
                 html.AppendLine("</tr>");
                 html.AppendLine("</tbody>");
                 html.AppendLine("</table>");
@@ -1743,8 +1775,9 @@ namespace ePopisV2
                 html.AppendLine("<div class='kasa-sekcija'>");
                 html.AppendLine("<h3>💰 KONAČNO STANJE KASE ZA DAN</h3>");
                 html.AppendLine($"<p>💵 <strong>Početno stanje kase (početak Prve smene):</strong> {FormatujBroj(pocetnaKasa1)} RSD</p>");
-                html.AppendLine($"<p>📊 <strong>Ukupan ostvareni pazar (Smena 1 + Smena 2):</strong> {FormatujBroj(ukupnoPazar)} RSD</p>");
-                html.AppendLine($"<p>➕ <strong>Teoretsko stanje (Početno + Pazar):</strong> {FormatujBroj(teoretskoStanje)} RSD</p>");
+                html.AppendLine($"<p>📊 <strong>Ukupan ostvareni pazar u obe smene:</strong> {FormatujBroj(ukupnoPazarComputed)} RSD</p>");
+                html.AppendLine($"<p>➕ <strong>Ukupan šank stanje:</strong> {FormatujBroj(ukupnoPazar)} RSD</p>");
+
 
                 if (inkasiraniIznos > 0)
                 {
@@ -1756,13 +1789,8 @@ namespace ePopisV2
 
                 html.AppendLine($"<p>🎯 <strong>Završno stanje kase na kraju dana:</strong> <strong>{FormatujBroj(krajnjaKasa2)} RSD</strong></p>");
 
-                if (razlika != 0)
-                {
-                    string razlikaBoja = razlika > 0 ? "#28a745" : "#dc3545";
-                    string razlikaZnak = razlika > 0 ? "+" : "";
-                    html.AppendLine($"<p style='color:{razlikaBoja};'><strong>📉 Razlika (Manjak/Višak):</strong> {razlikaZnak}{FormatujBroj(razlika)} RSD</p>");
-                }
-                html.AppendLine("</div>");
+               
+                // (signature moved to the end of the document)
 
                 // ========== LISTA TROŠKOVA PRVA SMENA ==========
                 if (troskoviPrvaSmena.Count > 0)
@@ -1818,6 +1846,18 @@ namespace ePopisV2
                     html.AppendLine("</div>");
                 }
 
+                // Signature footer: fixed to page bottom, centered line with caption below, name in bottom-right above the line
+                html.AppendLine("<!-- Signature footer -->");
+                // Centered line and caption (below the line)
+                html.AppendLine("<div style='position:fixed; left:0; right:0; bottom:40px; text-align:center; pointer-events:none;'>");
+                html.AppendLine("  <div style='display:inline-block; text-align:center;'>");
+                html.AppendLine("    <div style='width:220px; border-top:1px solid #000; height:1px; margin:0 auto;'></div>");
+                html.AppendLine("    <div style='margin-top:6px; font-size:0.85em; color:#333;'>potpis radnika</div>");
+                html.AppendLine("  </div>");
+                html.AppendLine("</div>");
+                // Name on the bottom-right, slightly above the line
+                html.AppendLine($"<div style='position:fixed; right:20px; bottom:62px; font-weight:bold; pointer-events:none;'>{(p2.Length > 1 ? p2[1] : "")}</div>");
+
                 html.AppendLine("</div>");
                 html.AppendLine("</body>");
                 html.AppendLine("</html>");
@@ -1829,6 +1869,27 @@ namespace ePopisV2
                 {
                     if (trenutnaSmena == 2)
                     {
+                        // Temporarily clear Internet Explorer page headers/footers so WebBrowser.Print() does not print them.
+                        string pageSetupKey = @"Software\Microsoft\Internet Explorer\PageSetup";
+                        string oldHeader = null, oldFooter = null;
+                        try
+                        {
+                            using (var reg = Registry.CurrentUser.OpenSubKey(pageSetupKey, true))
+                            {
+                                if (reg != null)
+                                {
+                                    try { oldHeader = reg.GetValue("header") as string; } catch { oldHeader = null; }
+                                    try { oldFooter = reg.GetValue("footer") as string; } catch { oldFooter = null; }
+                                    try { reg.SetValue("header", ""); } catch { }
+                                    try { reg.SetValue("footer", ""); } catch { }
+                                }
+                            }
+                        }
+                        catch (Exception rex)
+                        {
+                            WriteDebug($"Warning: failed to modify IE PageSetup registry values: {rex.Message}");
+                        }
+
                         WebBrowser wb = new WebBrowser();
                         wb.ScriptErrorsSuppressed = true;
                         wb.ScrollBarsEnabled = false;
@@ -1836,8 +1897,17 @@ namespace ePopisV2
                         {
                             try
                             {
-                                wb.Print();
-                                WriteDebug($"Automatsko štampanje pokrenuto: {path}");
+                                // give browser a short moment to finish rendering
+                                try { Thread.Sleep(300); } catch { }
+                                try
+                                {
+                                    wb.Print();
+                                    WriteDebug($"Automatsko štampanje pokrenuto (WebBrowser.Print): {path}");
+                                }
+                                catch (Exception pex)
+                                {
+                                    WriteDebug($"Greška pri WebBrowser.Print: {pex.Message}");
+                                }
                             }
                             catch (Exception ex)
                             {
@@ -1845,10 +1915,26 @@ namespace ePopisV2
                             }
                             finally
                             {
-                                wb.Dispose();
+                                try { wb.Dispose(); } catch { }
+                                // restore previous header/footer values
+                                try
+                                {
+                                    using (var reg = Registry.CurrentUser.OpenSubKey(pageSetupKey, true))
+                                    {
+                                        if (reg != null)
+                                        {
+                                            try { if (oldHeader != null) reg.SetValue("header", oldHeader); else reg.DeleteValue("header", false); } catch { }
+                                            try { if (oldFooter != null) reg.SetValue("footer", oldFooter); else reg.DeleteValue("footer", false); } catch { }
+                                        }
+                                    }
+                                }
+                                catch (Exception rex)
+                                {
+                                    WriteDebug($"Warning: failed to restore IE PageSetup registry values: {rex.Message}");
+                                }
                             }
                         };
-                        // Navigiraj na fajl (potrebno da bude file URI)
+                        // Navigate to file (must be a file URI)
                         wb.Navigate(new Uri(path));
                     }
                 }
