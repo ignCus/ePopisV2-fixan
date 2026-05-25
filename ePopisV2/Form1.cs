@@ -9,6 +9,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Drawing;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using Microsoft.Win32;
 
@@ -39,6 +40,7 @@ namespace ePopisV2
 
         private string telegramToken = "8993026912:AAE1bECC3oliaO1LCRDWu09XWt9rhA7X32U";
         private string telegramChatId = "";
+        private string telegramChatIdMaja = "6815261644";
 
         private bool dopunaOdobrena = false;
         private bool podizanjeOdobreno = false;
@@ -56,6 +58,9 @@ namespace ePopisV2
         private string debugLogPath = "";
 
         private decimal originalKazino = 0, originalKladionica = 0, originalLbet = 0, originalSank = 0;
+        private decimal pazarSmeneValue = 0; // internal pazar value excluding sank
+        private decimal sankTotalPersisted = 0; // running total of sank until reset by inkasacija
+        private readonly object sankFileLock = new object();
 
         private TextBox txtBrojGostijuAparati = new TextBox();
         private TextBox txtBrojGostijuKladionica = new TextBox();
@@ -66,12 +71,28 @@ namespace ePopisV2
         private string fiksniKodLokacije = "";
         private string fiksniNazivLokacije = "";
         private decimal fiksniPocetniDepozit = 0;
+        private decimal fiksniUtvrdjeniDepozit = 0;
 
         public class LokalConfig
         {
             public string NazivLokacije { get; set; }
             public string KodLokacije { get; set; }
             public decimal PocetniDepozit { get; set; }
+            public decimal UtvrdjeniDepozit { get; set; }
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, string lParam);
+        private const int EM_SETCUEBANNER = 0x1501;
+
+        private void SetCue(TextBox tb, string cue)
+        {
+            try
+            {
+                if (tb == null || tb.IsDisposed) return;
+                SendMessage(tb.Handle, EM_SETCUEBANNER, (IntPtr)1, cue ?? string.Empty);
+            }
+            catch { }
         }
 
         private class Trosak
@@ -141,6 +162,7 @@ namespace ePopisV2
             this.Size = new Size(1480, 840);
 
             UcitajFiksnePodatkeLokala();
+            UcitajSankTotal();
 
             txtBrojGostijuAparati.TextChanged += (s, e) => IzracunajUkupnoGostiju();
             txtBrojGostijuKladionica.TextChanged += (s, e) => IzracunajUkupnoGostiju();
@@ -176,6 +198,9 @@ namespace ePopisV2
                 kodlokacije.Text = fiksniKodLokacije;
             else
                 kodlokacije.Text = sifra;
+
+            // Popuni utvrdjeni depozit iz fiksnih podešavanja (prikaži i ako je 0)
+            utvrdjeniDepozit.Text = fiksniUtvrdjeniDepozit.ToString("N0");
 
             btnZavrsiSmenu.Text = (trenutnaSmena == 1) ? "Završi Smenu" : "Završi Popis";
 
@@ -217,6 +242,73 @@ namespace ePopisV2
             IzracunajSve();
 
             ProveriITretirajPrethodnuAutorizaciju();
+
+            // As a last resort, ensure utvrdjeni depozit is read from lokal_config.json and applied to UI
+            TryLoadAndApplyUtvrdjeniDepozit();
+            // Ensure inkasacija textbox is not auto-filled with '0' on startup
+            ClearInkasacijaIfZero();
+        }
+
+        private void ClearInkasacijaIfZero()
+        {
+            try
+            {
+                // detach placeholder handlers to avoid interference
+                inkasacija.GotFocus -= Inkasacija_GotFocus;
+                inkasacija.LostFocus -= Inkasacija_LostFocus;
+                if (!string.IsNullOrEmpty(inkasacija.Text) && inkasacija.Text.Trim() == "0")
+                {
+                    inkasacija.Text = "";
+                }
+                inkasacija.ForeColor = Color.White;
+                inkasacija.SelectionStart = 0;
+                inkasacija.SelectionLength = 0;
+            }
+            catch { }
+        }
+
+        private void TryLoadAndApplyUtvrdjeniDepozit()
+        {
+            try
+            {
+                // Attempt same locations as UcitajFiksnePodatkeLokala
+                string[] pathsToTry = new[] {
+                    lokalConfigPath,
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config", "lokal_config.json"),
+                    Path.Combine(GlavniFolderPath ?? "", "lokal_config.json")
+                };
+
+                foreach (var p in pathsToTry)
+                {
+                    try
+                    {
+                        if (string.IsNullOrEmpty(p)) continue;
+                        WriteDebug($"TryLoadAndApplyUtvrdjeniDepozit: trying path {p}");
+                        if (!File.Exists(p)) { WriteDebug($"TryLoadAndApplyUtvrdjeniDepozit: not found {p}"); continue; }
+                        var json = File.ReadAllText(p);
+                        WriteDebug($"TryLoadAndApplyUtvrdjeniDepozit: read content: {json}");
+                        var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                        var cfg = JsonSerializer.Deserialize<LokalConfig>(json, opts);
+                        if (cfg != null)
+                        {
+                            fiksniUtvrdjeniDepozit = cfg.UtvrdjeniDepozit;
+                            WriteDebug($"TryLoadAndApplyUtvrdjeniDepozit: loaded Utvrdjeni={fiksniUtvrdjeniDepozit}");
+                            try { utvrdjeniDepozit.Text = fiksniUtvrdjeniDepozit.ToString("N0"); } catch { utvrdjeniDepozit.Text = "0"; }
+                            return;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteDebug($"TryLoadAndApplyUtvrdjeniDepozit: error reading {p}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteDebug($"TryLoadAndApplyUtvrdjeniDepozit: unexpected error: {ex.Message}");
+            }
+            // fallback: ensure textbox shows 0
+            try { utvrdjeniDepozit.Text = fiksniUtvrdjeniDepozit.ToString("N0"); } catch { utvrdjeniDepozit.Text = "0"; }
         }
 
         private void SacuvajStanjeURegistry()
@@ -298,21 +390,87 @@ namespace ePopisV2
 
         private void UcitajFiksnePodatkeLokala()
         {
-            if (File.Exists(lokalConfigPath))
+            // Try the main lokal_config.json first
+            try
             {
-                try
+                WriteDebug($"UcitajFiksnePodatkeLokala: looking for lokal_config at: {lokalConfigPath}");
+                if (File.Exists(lokalConfigPath))
                 {
                     string json = File.ReadAllText(lokalConfigPath);
-                    var config = JsonSerializer.Deserialize<LokalConfig>(json);
+                    WriteDebug($"UcitajFiksnePodatkeLokala: found file, content:\n{json}");
+                    var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var config = JsonSerializer.Deserialize<LokalConfig>(json, opts);
                     if (config != null)
                     {
-                        fiksniKodLokacije = config.KodLokacije;
-                        fiksniNazivLokacije = config.NazivLokacije;
+                        fiksniKodLokacije = config.KodLokacije ?? "";
+                        fiksniNazivLokacije = config.NazivLokacije ?? "";
                         fiksniPocetniDepozit = config.PocetniDepozit;
+                        fiksniUtvrdjeniDepozit = config.UtvrdjeniDepozit;
+                        WriteDebug($"UcitajFiksnePodatkeLokala: loaded Kod={fiksniKodLokacije}, Naziv={fiksniNazivLokacije}, Pocetni={fiksniPocetniDepozit}, Utvrdjeni={fiksniUtvrdjeniDepozit}");
+                        return;
                     }
                 }
-                catch { }
             }
+            catch (Exception ex)
+            {
+                WriteDebug($"UcitajFiksnePodatkeLokala: error reading primary path: {ex.Message}");
+            }
+
+            // Fallback 1: exe Config pointer (useful when launching directly)
+            try
+            {
+                string exeConfigPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config", "lokal_config.json");
+                WriteDebug($"UcitajFiksnePodatkeLokala: trying exe config path: {exeConfigPath}");
+                if (File.Exists(exeConfigPath))
+                {
+                    string json = File.ReadAllText(exeConfigPath);
+                    WriteDebug($"UcitajFiksnePodatkeLokala: found exe config content:\n{json}");
+                    var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var config = JsonSerializer.Deserialize<LokalConfig>(json, opts);
+                    if (config != null)
+                    {
+                        fiksniKodLokacije = config.KodLokacije ?? "";
+                        fiksniNazivLokacije = config.NazivLokacije ?? "";
+                        fiksniPocetniDepozit = config.PocetniDepozit;
+                        fiksniUtvrdjeniDepozit = config.UtvrdjeniDepozit;
+                        WriteDebug($"UcitajFiksnePodatkeLokala: loaded from exe config Utvrdjeni={fiksniUtvrdjeniDepozit}");
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteDebug($"UcitajFiksnePodatkeLokala: error reading exe config path: {ex.Message}");
+            }
+
+            // Fallback 2: try GlavniFolderPath root (just in case)
+            try
+            {
+                if (!string.IsNullOrEmpty(GlavniFolderPath))
+                {
+                    string alt = Path.Combine(GlavniFolderPath, "lokal_config.json");
+                    WriteDebug($"UcitajFiksnePodatkeLokala: trying alternative path: {alt}");
+                    if (File.Exists(alt))
+                    {
+                        string json = File.ReadAllText(alt);
+                        var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                        var config = JsonSerializer.Deserialize<LokalConfig>(json, opts);
+                        if (config != null)
+                        {
+                            fiksniKodLokacije = config.KodLokacije ?? "";
+                            fiksniNazivLokacije = config.NazivLokacije ?? "";
+                            fiksniPocetniDepozit = config.PocetniDepozit;
+                            fiksniUtvrdjeniDepozit = config.UtvrdjeniDepozit;
+                            WriteDebug($"UcitajFiksnePodatkeLokala: loaded from alt path Utvrdjeni={fiksniUtvrdjeniDepozit}");
+                            return;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // If nothing found, default to 0
+            fiksniUtvrdjeniDepozit = 0;
         }
 
         private void IzracunajUkupnoGostiju()
@@ -428,6 +586,13 @@ namespace ePopisV2
             operativaPanel.Controls.Add(label5); operativaPanel.Controls.Add(smena1);
             operativaPanel.Controls.Add(label2); operativaPanel.Controls.Add(lokacija);
             operativaPanel.Controls.Add(label4); operativaPanel.Controls.Add(kodlokacije);
+
+            // Ensure the utvrdjeni depozit is visible on the UI (show 0 if not set)
+            try
+            {
+                utvrdjeniDepozit.Text = fiksniUtvrdjeniDepozit.ToString("N0");
+            }
+            catch { utvrdjeniDepozit.Text = "0"; }
         }
 
         private void SetupBottomSection()
@@ -559,10 +724,15 @@ namespace ePopisV2
             decimal pod = podizanjeOdobreno ? GetValue(podizanje) : 0;
             decimal tro = ukupniTroskovi;
             decimal pocetniDepozit = GetValue(depozit1);
-            decimal pazarSmene = (k + kl + l + s + dop) - (pod + tro);
-            decimal konacnoUKasi = pocetniDepozit + pazarSmene;
-            depozit.Text = FormatujBroj(pazarSmene);
+            // Exclude sank (s) from main pazar racunica; sank has separate racunica
+            pazarSmeneValue = (k + kl + l + dop) - (pod + tro);
+            decimal konacnoUKasi = pocetniDepozit + pazarSmeneValue;
+            // UI: show total sank (persisted + current shift). Keep internal pazarSmeneValue for reports.
+            decimal totalSankDisplay = sankTotalPersisted + s;
+            depozit.Text = FormatujBroj(totalSankDisplay);
             stanjedepnakraju.Text = FormatujBroj(konacnoUKasi);
+            // Update suggested inkasacija placeholder based on utvrdjeni depozit
+            UpdateInkasacijaPlaceholder(konacnoUKasi, totalSankDisplay);
             SnimiUTempFajl();
 
             // Sačuvaj stanje u Registry pri svakoj promeni
@@ -595,6 +765,7 @@ namespace ePopisV2
             Random rand = new Random();
             string generisaniKod = rand.Next(10000, 99999).ToString();
             string poruka = $"🔑 *AUTORIZACIJA ZAHTEVA*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* {tip}\n💰 *Iznos:* {FormatujBroj(iznos)} RSD";
+            
             if (tip == "Troskovi" && !string.IsNullOrEmpty(opis)) poruka += $"\n📝 *Opis:* {opis}";
             poruka += $"\n\n🔢 *KOD ZA UNOS:* `{generisaniKod}`";
             _ = PosaljiNaTelegram(poruka);
@@ -627,10 +798,29 @@ namespace ePopisV2
                 if (MessageBox.Show($"Upozorenje: Iznos inkasacije ({FormatujBroj(iznos)}) je veći od trenutnog stanja kase ({FormatujBroj(trenutnoStanje)}).\n\nDa li želite da nastavite sa autorizacijom?", "Provera inkasacije", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.No) return;
             }
 
+            // Pre-confirm: show suggested breakdown and ask operator to verify separation of sank and pazar
+            decimal suggestedTotal = GetSuggestedInkasacija();
+            // Total šank = persisted sank + current shift sank
+            decimal totalSank = sankTotalPersisted + GetValue(sank);
+            // Pazar part (what will be inkasirano u banku) is the suggestedTotal (does NOT include šank)
+            decimal pazarPart = suggestedTotal;
+            var preConfirmMsg = $"Pre nego što pošaljete kod, potvrdite da ste odvojili tačan iznos za šank i pazar:\n\n" +
+                                $" - Za šank spremiti: {FormatujBroj(totalSank)} RSD\n" +
+                                $" - Za igre na sreću spremiti: {FormatujBroj(pazarPart)} RSD\n\n" +
+                                "Jeste li odvojili navedene iznose?";
+
+            if (MessageBox.Show(preConfirmMsg, "Potvrda pre inkasacije", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.No)
+            {
+                return;
+            }
+
             Random rand = new Random();
             string generisaniKod = rand.Next(10000, 99999).ToString();
             string poruka = $"🔑 *AUTORIZACIJA ZAHTEVA - INKASACIJA*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n\n🔢 *KOD ZA UNOS:* `{generisaniKod}`";
+            string porukamaja = $"🔑 *OBAVESTENJE O INKASACIJI*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n📊 *Stanje nakon inkasacije:* {FormatujBroj(trenutnoStanje-iznos)} RSD";
             _ = PosaljiNaTelegram(poruka);
+            _ = PosaljiNaTelegramMaji(porukamaja);
+            
 
             Form authForm = new Form() { Text = "Unos Lozinke - Inkasacija", Size = new Size(350, 200), BackColor = Color.FromArgb(17, 24, 39), FormBorderStyle = FormBorderStyle.FixedSingle, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false };
             Label lblInfo = new Label() { Text = "Unesite kod sa Telegrama za INKASACIJU:", Location = new Point(20, 25), Size = new Size(300, 20), ForeColor = Color.White, Font = new Font("Segoe UI", 10) };
@@ -640,6 +830,61 @@ namespace ePopisV2
             btnPotvrdi.Click += (sender, e) => { if (txtKod.Text.Trim() == generisaniKod) { inkasacijaOdobrena = true; IzvrsiInkasaciju(iznos); authForm.DialogResult = DialogResult.OK; authForm.Close(); } else MessageBox.Show("Netačan kod! Pokušajte ponovo.", "Greška", MessageBoxButtons.OK, MessageBoxIcon.Error); };
             authForm.Controls.Add(lblInfo); authForm.Controls.Add(txtKod); authForm.Controls.Add(btnPotvrdi); authForm.AcceptButton = btnPotvrdi;
             authForm.ShowDialog();
+        }
+
+        private decimal GetSuggestedInkasacija()
+        {
+            // suggested = trenutno stanje - utvrdjeni depozit (allow negative)
+            decimal trenutno = GetValue(stanjedepnakraju);
+            decimal suggested = trenutno - fiksniUtvrdjeniDepozit;
+            return suggested;
+        }
+
+        private void UpdateInkasacijaPlaceholder(decimal konacnoUKasi, decimal totalSankDisplay)
+        {
+            try
+            {
+                decimal suggested = konacnoUKasi - fiksniUtvrdjeniDepozit;
+                // Use native cue/banner placeholder. Show only when suggested != 0
+                if (suggested != 0)
+                {
+                    SetCue(inkasacija, suggested.ToString("N0"));
+                }
+                else
+                {
+                    // clear cue
+                    SetCue(inkasacija, string.Empty);
+                }
+            }
+            catch { }
+        }
+
+        private void Inkasacija_GotFocus(object sender, EventArgs e)
+        {
+            if (inkasacija.ForeColor == Color.Gray)
+            {
+                inkasacija.Text = "";
+                inkasacija.ForeColor = Color.White;
+            }
+        }
+
+        private void Inkasacija_LostFocus(object sender, EventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(inkasacija.Text))
+            {
+                decimal suggested = GetSuggestedInkasacija();
+                if (suggested != 0)
+                {
+                    inkasacija.ForeColor = Color.Gray;
+                    inkasacija.Text = suggested.ToString("N0");
+                }
+                else
+                {
+                    // keep it empty and default color
+                    inkasacija.ForeColor = Color.White;
+                    inkasacija.Text = "";
+                }
+            }
         }
 
         private void IzvrsiInkasaciju(decimal iznosInkasacije)
@@ -659,11 +904,184 @@ namespace ePopisV2
                 File.WriteAllText(zadnjaInkasacijaPath, $"{DateTime.Now:yyyy-MM-dd}|{iznosInkasacije}");
             }
             catch { }
+            // Reset persisted sank total on inkasacija (reset sank_ukupno.txt)
+            try
+            {
+                sankTotalPersisted = 0;
+                string ukupnoPath = Path.Combine(ConfigFolderPath, "sank_ukupno.txt");
+                string prenosSankPath = Path.Combine(ConfigFolderPath, "prenos_sanka.txt");
+                string sankPath = Path.Combine(ConfigFolderPath, "sank_total.txt");
+                try { File.WriteAllText(ukupnoPath, sankTotalPersisted.ToString(CultureInfo.InvariantCulture)); } catch { }
+                try { File.WriteAllText(prenosSankPath, sankTotalPersisted.ToString(CultureInfo.InvariantCulture)); } catch { }
+                try { File.WriteAllText(sankPath, sankTotalPersisted.ToString(CultureInfo.InvariantCulture)); } catch { }
+                try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|inkasacija_reset|0{Environment.NewLine}"); } catch { }
+                WriteDebug($"Sank ukupno reset to 0 after inkasacija.");
+            }
+            catch { }
             depozit1.Text = FormatujBroj(novoStanje);
             SnimiUTempFajl();
+            // Refresh UI values after sank reset
+            IzracunajSve();
             WriteDebug($"INKASACIJA: Staro stanje={trenutnoStanje}, Inkasirano={iznosInkasacije}, Novo stanje={novoStanje}");
             MessageBox.Show($"✅ Inkasacija uspešno obavljena!\n\nPrethodno stanje: {FormatujBroj(trenutnoStanje)} RSD\nInkasirano: {FormatujBroj(iznosInkasacije)} RSD\nNovo stanje: {FormatujBroj(novoStanje)} RSD", "Inkasacija", MessageBoxButtons.OK, MessageBoxIcon.Information);
             inkasacija.Text = ""; inkasacijaOdobrena = false;
+        }
+
+        private void UcitajSankTotal()
+        {
+            try
+            {
+                // Primary persisted file for accumulated sank (be tolerant to filename variants)
+                string ukupnoPath = Path.Combine(ConfigFolderPath, "sank_ukupno.txt");
+                string prenosSankPath = Path.Combine(ConfigFolderPath, "prenos_sanka.txt");
+                string sankPath = Path.Combine(ConfigFolderPath, "sank_total.txt");
+
+                decimal? loaded = null;
+
+                // Try canonical names first
+                if (File.Exists(ukupnoPath)) loaded = ReadDecimalFromFileRobust(ukupnoPath);
+                if (loaded == null && File.Exists(prenosSankPath)) loaded = ReadDecimalFromFileRobust(prenosSankPath);
+                if (loaded == null && File.Exists(sankPath)) loaded = ReadDecimalFromFileRobust(sankPath);
+
+                // Try fuzzy matches in Config folder (handles typos like prenost_sank.txt)
+                if (loaded == null && Directory.Exists(ConfigFolderPath))
+                {
+                    try
+                    {
+                        var files = Directory.GetFiles(ConfigFolderPath);
+                        foreach (var f in files)
+                        {
+                            var name = Path.GetFileName(f).ToLowerInvariant();
+                            if (name.Contains("sank") && (name.Contains("ukup") || name.Contains("ukupno") || name.Contains("total") || name.Contains("prenos") || name.Contains("prenost")))
+                            {
+                                loaded = ReadDecimalFromFileRobust(f);
+                                if (loaded != null)
+                                {
+                                    WriteDebug($"UcitajSankTotal: fuzzy loaded from {f} value={loaded}");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (loaded.HasValue)
+                {
+                    sankTotalPersisted = loaded.Value;
+                    WriteDebug($"UcitajSankTotal: final loaded sankTotalPersisted={sankTotalPersisted}");
+                }
+                else
+                {
+                    sankTotalPersisted = 0;
+                    WriteDebug($"UcitajSankTotal: no file found, default sankTotalPersisted=0");
+                }
+                // If no total found but prva_smena_sank exists, use it so second shift shows correct amount
+                try
+                {
+                    if (sankTotalPersisted == 0)
+                    {
+                        string prvaSmenaSankPath = Path.Combine(ConfigFolderPath, "prva_smena_sank.txt");
+                        if (File.Exists(prvaSmenaSankPath))
+                        {
+                            var v = ReadDecimalFromFileRobust(prvaSmenaSankPath);
+                            if (v.HasValue)
+                            {
+                                sankTotalPersisted = v.Value;
+                                WriteDebug($"UcitajSankTotal: fallback loaded from prva_smena_sank.txt value={sankTotalPersisted}");
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+            catch { sankTotalPersisted = 0; }
+        }
+
+        private decimal? ReadDecimalFromFileRobust(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+                var txt = File.ReadAllText(path);
+                if (string.IsNullOrWhiteSpace(txt)) return null;
+                // extract first number (allow negative)
+                var m = Regex.Match(txt, "-?\\d+[\\d\\s,.]*");
+                if (!m.Success) return null;
+                var numStr = new string(m.Value.Where(c => char.IsDigit(c) || c == '-' || c == ',' || c == '.').ToArray());
+                numStr = numStr.Replace(" ", "").Replace(",", "");
+                if (decimal.TryParse(numStr, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal val))
+                    return val;
+            }
+            catch (Exception ex)
+            {
+                WriteDebug($"ReadDecimalFromFileRobust error for {path}: {ex.Message}");
+            }
+            return null;
+        }
+
+        private void SacuvajSankTotal(decimal additional)
+        {
+            try
+            {
+                WriteDebug($"SacuvajSankTotal: saving additional {additional}");
+                string sankPath = Path.Combine(ConfigFolderPath, "sank_total.txt");
+                string tempPath = sankPath + ".tmp";
+                lock (sankFileLock)
+                {
+                    // read current
+                    decimal current = 0;
+                    if (File.Exists(sankPath))
+                    {
+                        try
+                        {
+                            var txt = File.ReadAllText(sankPath);
+                            decimal.TryParse(txt, NumberStyles.Any, CultureInfo.InvariantCulture, out current);
+                            WriteDebug($"SacuvajSankTotal: read existing value {current} from file");
+                        }
+                        catch (Exception ex)
+                        {
+                            WriteDebug($"SacuvajSankTotal: failed read existing value: {ex.Message}");
+                            current = 0;
+                        }
+                    }
+
+                    decimal updated = current + additional;
+                    try
+                    {
+                        File.WriteAllText(tempPath, updated.ToString(CultureInfo.InvariantCulture));
+                        // replace or move
+                        if (File.Exists(sankPath)) File.Replace(tempPath, sankPath, null);
+                        else File.Move(tempPath, sankPath);
+                        try { File.SetLastWriteTime(sankPath, DateTime.Now); } catch { }
+                        // append to journal
+                        try
+                        {
+                            string journal = Path.Combine(ConfigFolderPath, "sank_journal.txt");
+                            string entry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|added|{additional.ToString(CultureInfo.InvariantCulture)}|total|{updated.ToString(CultureInfo.InvariantCulture)}";
+                            File.AppendAllLines(journal, new[] { entry });
+                        }
+                        catch { }
+                        // re-read to confirm
+                        try
+                        {
+                            var check = File.ReadAllText(sankPath);
+                            if (decimal.TryParse(check, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal checkVal))
+                                sankTotalPersisted = checkVal;
+                        }
+                        catch { sankTotalPersisted = updated; }
+                        WriteDebug($"SacuvajSankTotal: wrote updated sankTotalPersisted={sankTotalPersisted} to {sankPath}");
+                    }
+                    finally
+                    {
+                        try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteDebug($"SacuvajSankTotal: exception {ex.Message}");
+            }
         }
 
         private async void btnZavrsiSmenu_Click(object sender, EventArgs e)
@@ -707,7 +1125,133 @@ namespace ePopisV2
             decimal krajnjeStanje = GetValue(stanjedepnakraju);
             string prenosDepozitaPath = Path.Combine(ConfigFolderPath, "prenos_depozita.txt");
             File.WriteAllText(prenosDepozitaPath, krajnjeStanje.ToString());
+            try
+            {
+                decimal currentSank = GetValue(sank);
+                string ukupnoPath = Path.Combine(ConfigFolderPath, "sank_ukupno.txt");
+                string prvaSmenaSankPath = Path.Combine(ConfigFolderPath, "prva_smena_sank.txt");
+                string prenosSankPath = Path.Combine(ConfigFolderPath, "prenos_sanka.txt");
+                string sankPath = Path.Combine(ConfigFolderPath, "sank_total.txt");
 
+                if (trenutnaSmena == 1)
+                {
+                    // Save first shift sank value for later delta computation
+                    try
+                    {
+                        if (!File.Exists(prvaSmenaSankPath))
+                        {
+                            File.WriteAllText(prvaSmenaSankPath, currentSank.ToString(CultureInfo.InvariantCulture));
+                            WriteDebug($"btnZavrsiSmenu: Saved first shift sank value {currentSank} to prva_smena_sank.txt");
+
+                            // Also add current first-shift sank to the running total so UI shows it immediately
+                            decimal existing = 0;
+                            if (File.Exists(ukupnoPath))
+                            {
+                                var t = File.ReadAllText(ukupnoPath);
+                                decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                                WriteDebug($"btnZavrsiSmenu: read existing ukupno from sank_ukupno.txt = {existing}");
+                            }
+                            else if (File.Exists(prenosSankPath))
+                            {
+                                var t = File.ReadAllText(prenosSankPath);
+                                decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                                WriteDebug($"btnZavrsiSmenu: read existing from prenos_sanka.txt = {existing}");
+                            }
+                            else if (File.Exists(sankPath))
+                            {
+                                var t = File.ReadAllText(sankPath);
+                                decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                                WriteDebug($"btnZavrsiSmenu: read existing from sank_total.txt = {existing}");
+                            }
+
+                            decimal newTotal = existing + currentSank;
+                            try
+                            {
+                                File.WriteAllText(ukupnoPath, newTotal.ToString(CultureInfo.InvariantCulture));
+                                try { File.WriteAllText(prenosSankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
+                                try { File.WriteAllText(sankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
+                                sankTotalPersisted = newTotal;
+                                WriteDebug($"btnZavrsiSmenu: Initialized sank_ukupno to {newTotal} after first shift");
+                                try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|firstshift|added|{currentSank}|total|{newTotal}{Environment.NewLine}"); } catch { }
+                            }
+                            catch (Exception ex)
+                            {
+                                WriteDebug($"btnZavrsiSmenu: failed to write sank_ukupno on first shift: {ex.Message}");
+                            }
+                        }
+                        else
+                        {
+                            WriteDebug("btnZavrsiSmenu: prva_smena_sank.txt already exists, skipping initialization of sank_ukupno");
+                        }
+                    }
+                    catch (Exception ex) { WriteDebug($"btnZavrsiSmenu: failed to write prva_smena_sank.txt: {ex.Message}"); }
+                }
+                else if (trenutnaSmena == 2)
+                {
+                    // Read first shift sank, compute delta = smena2 - smena1 and add to sank_ukupno
+                    decimal firstSank = 0;
+                    if (File.Exists(prvaSmenaSankPath))
+                    {
+                        var txt = File.ReadAllText(prvaSmenaSankPath);
+                        decimal.TryParse(txt, NumberStyles.Any, CultureInfo.InvariantCulture, out firstSank);
+                        WriteDebug($"btnZavrsiSmenu: read first shift sank = {firstSank} from prva_smena_sank.txt");
+                    }
+                    else
+                    {
+                        WriteDebug("btnZavrsiSmenu: prva_smena_sank.txt not found, assuming firstSank=0");
+                    }
+
+                    decimal delta = currentSank - firstSank;
+                    WriteDebug($"btnZavrsiSmenu: computed delta = currentSank({currentSank}) - firstSank({firstSank}) = {delta}");
+
+                    // read existing ukupno
+                    decimal existing = 0;
+                    if (File.Exists(ukupnoPath))
+                    {
+                        var t = File.ReadAllText(ukupnoPath);
+                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                        WriteDebug($"btnZavrsiSmenu: read existing ukupno from sank_ukupno.txt = {existing}");
+                    }
+                    else if (File.Exists(prenosSankPath))
+                    {
+                        var t = File.ReadAllText(prenosSankPath);
+                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                        WriteDebug($"btnZavrsiSmenu: read existing from prenos_sanka.txt = {existing}");
+                    }
+                    else if (File.Exists(sankPath))
+                    {
+                        var t = File.ReadAllText(sankPath);
+                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                        WriteDebug($"btnZavrsiSmenu: read existing from sank_total.txt = {existing}");
+                    }
+
+                    decimal newTotal = existing + delta;
+                    try
+                    {
+                        File.WriteAllText(ukupnoPath, newTotal.ToString(CultureInfo.InvariantCulture));
+                        try { File.WriteAllText(prenosSankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
+                        try { File.WriteAllText(sankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
+                        sankTotalPersisted = newTotal;
+                        WriteDebug($"btnZavrsiSmenu: Updated sank_ukupno (added delta) to {newTotal}");
+                        try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|endshift|delta|{delta}|total|{newTotal}{Environment.NewLine}"); } catch { }
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteDebug($"btnZavrsiSmenu: failed to write sank_ukupno: {ex.Message}");
+                    }
+
+                    // remove first shift record after processing
+                    try { if (File.Exists(prvaSmenaSankPath)) File.Delete(prvaSmenaSankPath); } catch { }
+                }
+                else
+                {
+                    WriteDebug($"btnZavrsiSmenu: trenutnaSmena={trenutnaSmena}, no sank_ukupno action taken");
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteDebug($"Greška pri čuvanju sank total: {ex.Message}");
+            }
             // Note: zadnja_inkasacija.txt is written only by IzvrsiInkasaciju to avoid accidental writes here
 
             string tempStatePath = Path.Combine(ConfigFolderPath, "temp_state.txt");
@@ -835,6 +1379,20 @@ namespace ePopisV2
                     string url = $"https://api.telegram.org/bot{telegramToken}/sendMessage";
                     string cistTekst = tekst.Replace("\r\n", "\n").Replace("\n", "\\n").Replace("\"", "\\\"");
                     string jsonPayload = $"{{\"chat_id\": \"{telegramChatId}\", \"text\": \"{cistTekst}\", \"parse_mode\": \"Markdown\"}}";
+                    await client.PostAsync(url, new StringContent(jsonPayload, Encoding.UTF8, "application/json"));
+                }
+            }
+            catch { }
+        }
+        private async Task PosaljiNaTelegramMaji(string tekst)
+        {
+            try
+            {
+                using (HttpClient client = new HttpClient())
+                {
+                    string url = $"https://api.telegram.org/bot{telegramToken}/sendMessage";
+                    string cistTekst = tekst.Replace("\r\n", "\n").Replace("\n", "\\n").Replace("\"", "\\\"");
+                    string jsonPayload = $"{{\"chat_id\": \"{telegramChatIdMaja}\", \"text\": \"{cistTekst}\", \"parse_mode\": \"Markdown\"}}";
                     await client.PostAsync(url, new StringContent(jsonPayload, Encoding.UTF8, "application/json"));
                 }
             }

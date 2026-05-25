@@ -7,12 +7,15 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Globalization;
 using Microsoft.Win32; // DODATO ZA REGISTRY
 
 namespace ePopisV2
 {
     public partial class LoginFormcs : Form
     {
+        private Label lblPocetniDepozit;
         public int logujemoSmenu;
         private string configPutanja = "";
         private string adminConfigPath = "";
@@ -169,6 +172,9 @@ namespace ePopisV2
             Label lblNaslov = new Label() { Text = "DOBRODOŠLI", Font = new Font("Segoe UI", 22, FontStyle.Bold), ForeColor = Color.White, Location = new Point(30, 65), Size = new Size(360, 45), TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent };
             Label lblPodnaslov = new Label() { Text = $"Prijava radnika za Smenu {logujemoSmenu}", Font = new Font("Segoe UI", 10, FontStyle.Regular), ForeColor = Color.FromArgb(10, 108, 255), Location = new Point(30, 110), Size = new Size(360, 25), TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent };
 
+            // Pocetni depozit label (shows value from lokal_config.json if available)
+            lblPocetniDepozit = new Label() { Text = "", Font = new Font("Segoe UI", 10, FontStyle.Regular), ForeColor = Color.FromArgb(156, 163, 175), Location = new Point(30, 140), Size = new Size(360, 22), TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent };
+
             Label lblUserTag = new Label() { Text = "KORISNIČKO IME", Font = new Font("Segoe UI", 8, FontStyle.Bold), ForeColor = Color.FromArgb(156, 163, 175), Location = new Point(45, 160), Size = new Size(200, 20), BackColor = Color.Transparent };
             if (this.username != null)
             {
@@ -215,11 +221,113 @@ namespace ePopisV2
 
             this.Controls.Add(lblNaslov);
             this.Controls.Add(lblPodnaslov);
+            this.Controls.Add(lblPocetniDepozit);
             this.Controls.Add(lblUserTag);
             this.Controls.Add(lblPassTag);
             this.Controls.Add(lblFooter);
 
             this.AcceptButton = this.btnLogin;
+
+            // Load and display pocetni depozit if available
+            try
+            {
+                decimal poc = UcitajPocetniDepozitZaLogin();
+                if (poc != 0)
+                    lblPocetniDepozit.Text = $"Početni depozit smene: {poc.ToString("N0")} RSD";
+                else
+                    lblPocetniDepozit.Text = "";
+            }
+            catch { }
+        }
+
+        private decimal UcitajPocetniDepozitZaLogin()
+        {
+            try
+            {
+                // First try prenos_depozita file variants in the GlavniFolderPath/Config
+                if (!string.IsNullOrEmpty(GlavniFolderPath))
+                {
+                    string cfg = Path.Combine(GlavniFolderPath, "Config");
+                    if (Directory.Exists(cfg))
+                    {
+                        // common filenames
+                        string[] tryNames = new[] { "prenos_depozita.txt", "prenos_depozit.txt", "prenos_depozita .txt", "prenos_depozita" };
+                        foreach (var tn in tryNames)
+                        {
+                            var p = Path.Combine(cfg, tn);
+                            if (File.Exists(p))
+                            {
+                                var v = ParseDecimalFromText(File.ReadAllText(p));
+                                if (v.HasValue) return v.Value;
+                            }
+                        }
+
+                        // fuzzy search files containing both 'prenos' and 'depozit'
+                        try
+                        {
+                            foreach (var f in Directory.GetFiles(cfg))
+                            {
+                                var name = Path.GetFileName(f).ToLowerInvariant();
+                                if (name.Contains("prenos") && name.Contains("depoz"))
+                                {
+                                    var v = ParseDecimalFromText(File.ReadAllText(f));
+                                    if (v.HasValue) return v.Value;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                // If not found, fallback to lokal_config.json values (Glavni folder then exe)
+                if (!string.IsNullOrEmpty(GlavniFolderPath))
+                {
+                    string path = Path.Combine(GlavniFolderPath, "Config", "lokal_config.json");
+                    if (File.Exists(path))
+                    {
+                        string json = File.ReadAllText(path);
+                        using (var doc = JsonDocument.Parse(json))
+                        {
+                            if (doc.RootElement.TryGetProperty("PocetniDepozit", out var prop))
+                            {
+                                if (prop.ValueKind == JsonValueKind.Number && prop.TryGetDecimal(out decimal val)) return val;
+                                if (prop.ValueKind == JsonValueKind.String && decimal.TryParse(prop.GetString(), out decimal sval)) return sval;
+                            }
+                        }
+                    }
+                }
+
+                string exePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config", "lokal_config.json");
+                if (File.Exists(exePath))
+                {
+                    string json = File.ReadAllText(exePath);
+                    using (var doc = JsonDocument.Parse(json))
+                    {
+                        if (doc.RootElement.TryGetProperty("PocetniDepozit", out var prop))
+                        {
+                            if (prop.ValueKind == JsonValueKind.Number && prop.TryGetDecimal(out decimal val)) return val;
+                            if (prop.ValueKind == JsonValueKind.String && decimal.TryParse(prop.GetString(), out decimal sval)) return sval;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        private decimal? ParseDecimalFromText(string txt)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(txt)) return null;
+                var m = Regex.Match(txt, @"-?[0-9][0-9\s,\.]*");
+                if (!m.Success) return null;
+                var numStr = new string(m.Value.Where(c => char.IsDigit(c) || c == '-' || c == ',' || c == '.').ToArray());
+                numStr = numStr.Replace(" ", "").Replace(",", "");
+                if (decimal.TryParse(numStr, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal val)) return val;
+            }
+            catch { }
+            return null;
         }
 
         private void UcitajAdminConfig()
@@ -408,6 +516,8 @@ namespace ePopisV2
                     string[] redovi = csvData.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries);
 
                     bool nadjen = false;
+                    bool proceedDespiteShortage = false;
+                    bool suppressLoginError = false;
 
                     for (int i = 1; i < redovi.Length; i++)
                     {
@@ -429,14 +539,52 @@ namespace ePopisV2
                             // tek kada radnik eksplicitno klikne "Završi Smenu".
                             int sledecaSmena = (this.logujemoSmenu == 1) ? 2 : 1;
 
-                            Form1 glavna = new Form1(dbUser, dbMesto, dbKod, this.logujemoSmenu, dbPravoIme);
-                            glavna.Show();
-                            this.Hide();
-                            break;
+                            // Pre nego što otvorimo glavnu formu, pitaj operatera da potvrdi stanje kase
+                            decimal expectedPrenos = 0;
+                            try
+                            {
+                                expectedPrenos = UcitajPocetniDepozitZaLogin();
+                            }
+                            catch { expectedPrenos = 0; }
+
+                            string msg = expectedPrenos != 0
+                                ? $"Proverite da li vam je stanje kase {expectedPrenos:N0} RSD.\n\nUkoliko jeste, kliknite YES da nastavite, ukoliko nije NO da se vratite.":
+                                  "Proverite stanje kase pre otvaranja smene.\n\nAko želite da nastavite, kliknite YES.";
+
+                            if (MessageBox.Show(msg, "Provera stanja kase", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                            {
+                                Form1 glavna = new Form1(dbUser, dbMesto, dbKod, this.logujemoSmenu, dbPravoIme);
+                                glavna.Show();
+                                this.Hide();
+                                break;
+                            }
+                            else
+                            {
+                                // ask to report shortage to manager
+                                var report = MessageBox.Show("Prijavite poslovodji da imate manjak u kasi. \nUkoliko je poslovodja obavesten, kliknite YES da nastavite, ukoliko nije NO da se vratite.", "Obaveštenje", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                                if (report == DialogResult.Yes)
+                                {
+                                    // allow login despite shortage
+                                    Form1 glavna = new Form1(dbUser, dbMesto, dbKod, this.logujemoSmenu, dbPravoIme);
+                                    glavna.Show();
+                                    this.Hide();
+                                    proceedDespiteShortage = true;
+                                    break;
+                                }
+                                else
+                                {
+                                    // operator did not report; return to login without showing "wrong credentials"
+                                    nadjen = false;
+                                    suppressLoginError = true;
+                                    username.Clear(); password.Clear();
+                                    username.Focus();
+                                    break;
+                                }
+                            }
                         }
                     }
 
-                    if (!nadjen)
+                    if (!nadjen && !proceedDespiteShortage && !suppressLoginError)
                     {
                         MessageBox.Show("Pogrešni podaci ili niste uneti u bazu!", "Greška", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
@@ -462,6 +610,7 @@ namespace ePopisV2
         private TextBox txtLokacija;
         private TextBox txtKodLokacije;
         private TextBox txtPocetniDepozit;
+        private TextBox txtUtvrdjeniDepozit;
         private TextBox txtTelegramId;
         private TextBox txtGlavniFolder;
         private Button btnSacuvaj;
@@ -475,6 +624,7 @@ namespace ePopisV2
             public string NazivLokacije { get; set; }
             public string KodLokacije { get; set; }
             public decimal PocetniDepozit { get; set; }
+            public decimal UtvrdjeniDepozit { get; set; }
         }
 
         public class AdminConfig
@@ -567,6 +717,25 @@ namespace ePopisV2
             txtPocetniDepozit = new TextBox()
             {
                 Location = new Point(160, 148),
+                Size = new Size(300, 28),
+                BackColor = Color.FromArgb(55, 65, 81),
+                ForeColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 10)
+            };
+
+            Label lblUtvrdjeniDepozit = new Label()
+            {
+                Text = "Utvrdjeni Depozit (RSD):",
+                Location = new Point(30, 185),
+                Size = new Size(130, 28),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 10)
+            };
+
+            txtUtvrdjeniDepozit = new TextBox()
+            {
+                Location = new Point(160, 183),
                 Size = new Size(300, 28),
                 BackColor = Color.FromArgb(55, 65, 81),
                 ForeColor = Color.White,
@@ -679,6 +848,8 @@ namespace ePopisV2
             this.Controls.Add(txtKodLokacije);
             this.Controls.Add(lblPocetniDepozit);
             this.Controls.Add(txtPocetniDepozit);
+            this.Controls.Add(lblUtvrdjeniDepozit);
+            this.Controls.Add(txtUtvrdjeniDepozit);
             this.Controls.Add(lblSeparator);
             this.Controls.Add(lblAdminNaslov);
             this.Controls.Add(lblTelegramId);
@@ -725,6 +896,7 @@ namespace ePopisV2
                             txtLokacija.Text = config.NazivLokacije ?? "";
                             txtKodLokacije.Text = config.KodLokacije ?? "";
                             txtPocetniDepozit.Text = config.PocetniDepozit.ToString("N0");
+                            txtUtvrdjeniDepozit.Text = config.UtvrdjeniDepozit.ToString("N0");
                         }
                     }
                     catch { }
@@ -823,7 +995,8 @@ namespace ePopisV2
             {
                 NazivLokacije = txtLokacija.Text.Trim(),
                 KodLokacije = txtKodLokacije.Text.Trim(),
-                PocetniDepozit = pocetniDepozit
+                PocetniDepozit = pocetniDepozit,
+                UtvrdjeniDepozit = 0
             };
 
             AdminConfig adminConfig = new AdminConfig
@@ -835,8 +1008,18 @@ namespace ePopisV2
             try
             {
                 // 1. Sačuvaj lokal_config.json u JEDINI Config folder (unutar glavnog)
+                // If admin provided utvrdjeni depozit parse and set it
+                if (!string.IsNullOrWhiteSpace(txtUtvrdjeniDepozit.Text))
+                {
+                    string t = txtUtvrdjeniDepozit.Text.Replace(".", "").Replace(",", "").Trim();
+                    if (decimal.TryParse(t, out decimal udep))
+                        lokalConfig.UtvrdjeniDepozit = udep;
+                }
+
+                // Serialize with case-insensitive properties to match reader
+                var opts = new JsonSerializerOptions { WriteIndented = true };
                 File.WriteAllText(Path.Combine(jediniConfigFolder, "lokal_config.json"),
-                    JsonSerializer.Serialize(lokalConfig, new JsonSerializerOptions { WriteIndented = true }));
+                    JsonSerializer.Serialize(lokalConfig, opts));
 
                 // 2. Sačuvaj admin_config.json u JEDINI Config folder (unutar glavnog)
                 File.WriteAllText(Path.Combine(jediniConfigFolder, "admin_config.json"),
