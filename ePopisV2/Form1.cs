@@ -652,7 +652,13 @@ namespace ePopisV2
             string zadnjaInkasacijaPath = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt");
 
             File.WriteAllText(prenosDepozitaPath, novoStanje.ToString());
-            File.WriteAllText(zadnjaInkasacijaPath, iznosInkasacije.ToString());
+            // Save inkasacija with date so it is shown only on the day it was performed
+            // Format: yyyy-MM-dd|amount
+            try
+            {
+                File.WriteAllText(zadnjaInkasacijaPath, $"{DateTime.Now:yyyy-MM-dd}|{iznosInkasacije}");
+            }
+            catch { }
             depozit1.Text = FormatujBroj(novoStanje);
             SnimiUTempFajl();
             WriteDebug($"INKASACIJA: Staro stanje={trenutnoStanje}, Inkasirano={iznosInkasacije}, Novo stanje={novoStanje}");
@@ -686,6 +692,8 @@ namespace ePopisV2
             decimal krajnjeStanje = GetValue(stanjedepnakraju);
             string prenosDepozitaPath = Path.Combine(ConfigFolderPath, "prenos_depozita.txt");
             File.WriteAllText(prenosDepozitaPath, krajnjeStanje.ToString());
+
+            // Note: zadnja_inkasacija.txt is written only by IzvrsiInkasaciju to avoid accidental writes here
 
             string tempStatePath = Path.Combine(ConfigFolderPath, "temp_state.txt");
             if (File.Exists(tempStatePath)) File.Delete(tempStatePath);
@@ -930,7 +938,37 @@ namespace ePopisV2
                 decimal inkasiraniIznos = 0;
                 string zadnjaInkasacijaPath = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt");
                 if (File.Exists(zadnjaInkasacijaPath))
-                    decimal.TryParse(File.ReadAllText(zadnjaInkasacijaPath), out inkasiraniIznos);
+                {
+                    try
+                    {
+                        string raw = File.ReadAllText(zadnjaInkasacijaPath).Trim();
+                        if (!string.IsNullOrEmpty(raw))
+                        {
+                            // Supported formats:
+                            // 1) yyyy-MM-dd|amount
+                            // 2) yyyy-MM-dd|shift|amount (shift ignored for global reporting)
+                            // 3) legacy: plain number -> check file last write date
+                            if (raw.Contains("|"))
+                            {
+                                var parts = raw.Split('|');
+                                if (parts.Length >= 2)
+                                {
+                                    if (DateTime.TryParseExact(parts[0], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime inkDate))
+                                    {
+                                        if (inkDate.Date == dateTimePicker1.Value.Date)
+                                        {
+                                            // amount is last part
+                                            if (decimal.TryParse(parts[parts.Length - 1], out decimal amount))
+                                                inkasiraniIznos = amount;
+                                        }
+                                    }
+                                }
+                            }
+                            // ignore legacy plain-number format to avoid accidental display; require explicit dated record yyyy-MM-dd|amount
+                        }
+                    }
+                    catch { }
+                }
 
                 string[] p2 = {
             DateTime.Now.ToString("dd.MM.yyyy"), smena1.Text, lokacija.Text, kodlokacije.Text,
@@ -1019,6 +1057,8 @@ namespace ePopisV2
                 html.AppendLine("</tbody>");
                 html.AppendLine("</table>");
 
+                // (Inkasacija will be shown globally later in the final kasa section if it matches report date)
+
                 // ========== DRUGA SMENA ==========
                 html.AppendLine("<h2>🕒 DRUGA SMENA (NOĆ)</h2>");
                 html.AppendLine($"<h3>👤 <strong>Radnik:</strong> {p2[1]} &nbsp;&nbsp;|&nbsp;&nbsp; 📍 <strong>Lokal:</strong> {p2[2]} ({p2[3]}) &nbsp;&nbsp;|&nbsp;&nbsp; 📅 <strong>Vreme popisa:</strong> {p2[0]}</h3>");
@@ -1061,6 +1101,8 @@ namespace ePopisV2
                 html.AppendLine("</tr>");
                 html.AppendLine("</tbody>");
                 html.AppendLine("</table>");
+
+                // (Inkasacija will be shown globally later in the final kasa section if it matches report date)
 
                 // ========== UKUPNA STATISTIKA ==========
                 decimal kazino1 = ParsirajBrojIzStringa(p1[5]);
@@ -1135,13 +1177,11 @@ namespace ePopisV2
                 {
                     html.AppendLine("<div class='inkasacija'>");
                     html.AppendLine($"<p>🏦 <strong>INKASACIJA U BANKU:</strong> <strong style='color:#856404;'>{FormatujBroj(inkasiraniIznos)} RSD</strong></p>");
-                    html.AppendLine($"<p>💳 <strong>Stanje kase NAKON inkasacije:</strong> {FormatujBroj(krajnjaKasa2)} RSD</p>");
+                    html.AppendLine($"<p>💳 <strong>Stanje kase NAKON inkasacije:</strong> {FormatujBroj(krajnjaKasa2 - inkasiraniIznos)} RSD</p>");
                     html.AppendLine("</div>");
                 }
-                else
-                {
-                    html.AppendLine($"<p>🎯 <strong>Završno stanje kase na kraju dana:</strong> <strong>{FormatujBroj(krajnjaKasa2)} RSD</strong></p>");
-                }
+
+                html.AppendLine($"<p>🎯 <strong>Završno stanje kase na kraju dana:</strong> <strong>{FormatujBroj(krajnjaKasa2)} RSD</strong></p>");
 
                 if (razlika != 0)
                 {
