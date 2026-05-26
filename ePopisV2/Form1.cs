@@ -1439,7 +1439,10 @@ namespace ePopisV2
 
                 if (File.Exists(prvaSmenaPodaciPath)) File.Delete(prvaSmenaPodaciPath);
                 if (File.Exists(prvaSmenaTroskoviPath)) File.Delete(prvaSmenaTroskoviPath);
-                Application.Exit();
+                // Automatsko gašenje aplikacije je zakomentarisano kako bi operater mogao da
+                // pregleda rezultate/štampu ili izvrši dodatne radnje pre zatvaranja.
+                // Ako želite da vratite automatsko gašenje, uklonite // ispred naredne linije.
+                // Application.Exit();
             }
         }
 
@@ -2034,19 +2037,86 @@ namespace ePopisV2
                             {
                                 // give browser a short moment to finish rendering
                                 try { Thread.Sleep(300); } catch { }
+
+                                // Create a custom preview form so the operator can inspect the HTML
+                                // and choose whether to print (with printer selection) or close.
+                                Form previewForm = new Form()
+                                {
+                                    Text = "Pregled izveštaja pre štampe",
+                                    StartPosition = FormStartPosition.CenterParent,
+                                    WindowState = FormWindowState.Maximized,
+                                    BackColor = Color.White
+                                };
+
+                                // Top toolbar with buttons
+                                Panel topBar = new Panel() { Dock = DockStyle.Top, Height = 48, BackColor = Color.FromArgb(240, 240, 240) };
+                                Button btnPrint = new Button() { Text = "Štampaj", Width = 100, Height = 30, Left = 10, Top = 9, BackColor = Color.FromArgb(10,108,255), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+                                btnPrint.FlatAppearance.BorderSize = 0;
+                                Button btnPrintDialog = new Button() { Text = "Izaberi štampač", Width = 120, Height = 30, Left = 120, Top = 9, BackColor = Color.FromArgb(55,65,81), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+                                btnPrintDialog.FlatAppearance.BorderSize = 0;
+                                Button btnClose = new Button() { Text = "Zatvori", Width = 100, Height = 30, Left = 250, Top = 9, BackColor = Color.FromArgb(200,200,200), ForeColor = Color.Black, FlatStyle = FlatStyle.Flat };
+                                btnClose.FlatAppearance.BorderSize = 0;
+                                topBar.Controls.AddRange(new Control[] { btnPrint, btnPrintDialog, btnClose });
+
+                                // Ensure the wb is parented into the preview form so it renders inside
+                                wb.Dock = DockStyle.Fill;
+                                wb.ScrollBarsEnabled = true;
+
+                                // Add controls to form
+                                previewForm.Controls.Add(wb);
+                                previewForm.Controls.Add(topBar);
+
+                                // Button actions
+                                btnPrint.Click += (bs, be) =>
+                                {
+                                    try
+                                    {
+                                        // Direct print to default printer
+                                        wb.Print();
+                                        WriteDebug($"User initiated direct print for: {path}");
+                                    }
+                                    catch (Exception pex)
+                                    {
+                                        WriteDebug($"Greška pri wb.Print(): {pex.Message}");
+                                        MessageBox.Show("Greška pri direktnoj štampi: " + pex.Message, "Greška", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                    }
+                                };
+
+                                btnPrintDialog.Click += (bs, be) =>
+                                {
+                                    try
+                                    {
+                                        // Show the system print dialog which allows printer selection
+                                        wb.ShowPrintDialog();
+                                        WriteDebug($"User opened print dialog for: {path}");
+                                    }
+                                    catch (Exception pex)
+                                    {
+                                        WriteDebug($"Greška pri wb.ShowPrintDialog(): {pex.Message}");
+                                        MessageBox.Show("Greška pri otvaranju dijaloga za štampu: " + pex.Message, "Greška", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                    }
+                                };
+
+                                btnClose.Click += (bs, be) => { previewForm.Close(); };
+
+                                // Show preview as modal dialog so execution waits until user closes
                                 try
                                 {
-                                    wb.Print();
-                                    WriteDebug($"Automatsko štampanje pokrenuto (WebBrowser.Print): {path}");
+                                    previewForm.ShowDialog();
+                                    WriteDebug($"Custom print preview closed by user for: {path}");
                                 }
                                 catch (Exception pex)
                                 {
-                                    WriteDebug($"Greška pri WebBrowser.Print: {pex.Message}");
+                                    WriteDebug($"Greška pri prikazu custom preview: {pex.Message}");
+                                }
+                                finally
+                                {
+                                    try { previewForm.Dispose(); } catch { }
                                 }
                             }
                             catch (Exception ex)
                             {
-                                WriteDebug($"Greška pri automatskom štampanju: {ex.Message}");
+                                WriteDebug($"Greška pri prikazu za štampu: {ex.Message}");
                             }
                             finally
                             {
