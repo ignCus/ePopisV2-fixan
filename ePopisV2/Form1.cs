@@ -76,11 +76,7 @@ namespace ePopisV2
         private string fiksniNazivLokacije = "";
         private decimal fiksniPocetniDepozit = 0;
         private decimal fiksniUtvrdjeniDepozit = 0;
-        // Track locally applied inkasacija to avoid double-counting in IzracunajSve
-        private DateTime? lastLocalInkasacijaDate = null;
-        private decimal? lastLocalInkasacijaAmount = null;
-        // When true, IzracunajSve will not overwrite stanjedepnakraju.Text (used right after IzvrsiInkasaciju)
-        private bool suppressStanjeOverwrite = false;
+        // (no local double-apply tracking) inkasacija will be applied once by reading zadnja_inkasacija.txt
 
         public class LokalConfig
         {
@@ -773,34 +769,12 @@ namespace ePopisV2
                     if (!string.IsNullOrEmpty(raw) && raw.Contains("|"))
                     {
                         var parts = raw.Split('|');
-                        if (parts.Length >= 2)
+                        if (parts.Length >= 2 && DateTime.TryParseExact(parts[0], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime inkDate))
                         {
-                            if (DateTime.TryParseExact(parts[0], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime inkDate))
+                            if (inkDate.Date == dateTimePicker1.Value.Date && decimal.TryParse(parts[parts.Length - 1], out decimal tmp))
                             {
-                                if (inkDate.Date == dateTimePicker1.Value.Date)
-                                {
-                                    if (decimal.TryParse(parts[parts.Length - 1], out decimal tmp))
-                                    {
-                                        bool alreadyApplied = false;
-                                        try
-                                        {
-                                            if (lastLocalInkasacijaDate.HasValue && lastLocalInkasacijaAmount.HasValue)
-                                            {
-                                                if (lastLocalInkasacijaDate.Value == inkDate.Date && lastLocalInkasacijaAmount.Value == tmp)
-                                                {
-                                                    alreadyApplied = true;
-                                                }
-                                            }
-                                        }
-                                        catch { }
-
-                                        if (!alreadyApplied)
-                                        {
-                                            konacnoUKasi -= tmp;
-                                            try { lastLocalInkasacijaDate = inkDate.Date; lastLocalInkasacijaAmount = tmp; } catch { }
-                                        }
-                                    }
-                                }
+                                konacnoUKasi -= tmp;
+                                WriteDebug($"IzracunajSve: applied inkasacija {tmp} for {inkDate:yyyy-MM-dd}");
                             }
                         }
                     }
@@ -810,21 +784,13 @@ namespace ePopisV2
             // UI: show total sank (persisted + current shift). Keep internal pazarSmeneValue for reports.
             decimal totalSankDisplay = sankTotalPersisted + s;
             depozit.Text = FormatujBroj(totalSankDisplay);
-            // Only overwrite displayed end state when not suppressed (after manual update by IzvrsiInkasaciju)
-            if (!suppressStanjeOverwrite)
-            {
-                stanjedepnakraju.Text = FormatujBroj(konacnoUKasi);
-            }
+            stanjedepnakraju.Text = FormatujBroj(konacnoUKasi);
             // Update suggested inkasacija placeholder based on utvrdjeni depozit
             UpdateInkasacijaPlaceholder(konacnoUKasi, totalSankDisplay);
-            // Persist temp state and registry only when not suppressed to avoid clobbering immediate inkasacija UI changes
-            if (!suppressStanjeOverwrite)
-            {
-                SnimiUTempFajl();
+            SnimiUTempFajl();
 
-                // Sačuvaj stanje u Registry pri svakoj promeni
-                SacuvajStanjeURegistry();
-            }
+            // Sačuvaj stanje u Registry pri svakoj promeni
+            SacuvajStanjeURegistry();
         }
 
         private void PokreniAutorizacijuSaOpisom()
@@ -1005,31 +971,13 @@ namespace ePopisV2
                 WriteDebug($"Sank ukupno reset to 0 after inkasacija.");
             }
             catch { }
-            // Also clear current shift sank textbox so displayed šank becomes zero
+            // Clear current shift sank textbox so displayed šank becomes zero
             try { sank.Text = "0"; depozit.Text = FormatujBroj(sankTotalPersisted + GetValue(sank)); } catch { }
-            // Immediately update displayed end-of-day state (do not change pocetni depozit)
-            try
-            {
-                stanjedepnakraju.Text = FormatujBroj(novoStanje);
-                WriteDebug($"IzvrsiInkasaciju: updated stanjedepnakraju to {novoStanje}");
-            }
-            catch { }
 
-            // Mark applied locally BEFORE calling IzracunajSve so the file-based reader
-            // does not subtract the same inkasacija again (avoid double-subtraction).
-            try
-            {
-                lastLocalInkasacijaDate = DateTime.Now.Date;
-                lastLocalInkasacijaAmount = iznosInkasacije;
-            }
-            catch { }
-
-            // Persist temporary state (so UI state is preserved) and then recalc to refresh other fields
+            // Persist temporary state and then recalc; IzracunajSve will read zadnja_inkasacija.txt
+            // and apply the subtraction once, then set lastLocalInkasacija to avoid double-subtraction.
             SnimiUTempFajl();
-            // Prevent IzracunajSve from overwriting the manually updated stanjedepnakraju
-            suppressStanjeOverwrite = true;
             IzracunajSve();
-            suppressStanjeOverwrite = false;
             WriteDebug($"INKASACIJA: Staro stanje={trenutnoStanje}, Inkasirano={iznosInkasacije}, Novo stanje={novoStanje}");
             MessageBox.Show($"✅ Inkasacija uspešno obavljena!\n\nPrethodno stanje: {FormatujBroj(trenutnoStanje)} RSD\nInkasirano: {FormatujBroj(iznosInkasacije)} RSD\nNovo stanje: {FormatujBroj(novoStanje)} RSD", "Inkasacija", MessageBoxButtons.OK, MessageBoxIcon.Information);
             inkasacija.Text = ""; inkasacijaOdobrena = false;
@@ -1411,6 +1359,9 @@ namespace ePopisV2
                 File.WriteAllLines(prvaSmenaPodaciPath, podaci);
                 File.WriteAllText(prvaSmenaTroskoviPath, SerijalizujTroskove());
 
+                    // We already persisted prenos_depozita above; ensure zadnja_inkasacija not reapplied in next shift
+                    try { var zad = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt"); if (File.Exists(zad)) { File.Delete(zad); WriteDebug("btnZavrsiSmenu: deleted zadnja_inkasacija.txt after first shift save"); } } catch { }
+
                 // Zapamti da sledeća prijava treba da bude smena 2
                 try
                 {
@@ -1455,6 +1406,10 @@ namespace ePopisV2
 
                     // Pokreni generisanje i štampu u pozadini bez prikazivanja MessageBox-a
                     await SacuvajObeSmeneUExcel(false);
+
+                    // After generating the report for the day, delete the dated inkasacija so subsequent
+                    // launches or next-day sessions do not subtract it again from the persisted starting deposit.
+                    try { var zad = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt"); if (File.Exists(zad)) { File.Delete(zad); WriteDebug("End of day: deleted zadnja_inkasacija.txt after report"); } } catch { }
 
                     // Sačekaj još 10s dok je aplikacija sakrivena pre gašenja
                     try
@@ -1730,8 +1685,19 @@ namespace ePopisV2
                 string path = Path.Combine(monthlyFolder, fileName);
 
                 // Compute fresh pazar values (do not modify original parsed ones) for use in the HTML tables
-                decimal computedPazar1 = ParsirajBrojIzStringa(p1.Length > 5 ? p1[5] : "0") + ParsirajBrojIzStringa(p1.Length > 6 ? p1[6] : "0") + ParsirajBrojIzStringa(p1.Length > 7 ? p1[7] : "0") + ParsirajBrojIzStringa(p1.Length > 9 ? p1[9] : "0") + ParsirajBrojIzStringa(p1.Length > 10 ? p1[10] : "0") + ParsirajBrojIzStringa(p1.Length > 11 ? p1[11] : "0");
-                decimal computedPazar2 = ParsirajBrojIzStringa(p2.Length > 5 ? p2[5] : "0") + ParsirajBrojIzStringa(p2.Length > 6 ? p2[6] : "0") + ParsirajBrojIzStringa(p2.Length > 7 ? p2[7] : "0") + ParsirajBrojIzStringa(p2.Length > 9 ? p2[9] : "0") + ParsirajBrojIzStringa(p2.Length > 10 ? p2[10] : "0") + ParsirajBrojIzStringa(p2.Length > 11 ? p2[11] : "0");
+                // Pazar smene = (Kazino + Kladionica + LBet + Dopuna) - (Podizanje + Troškovi)
+                decimal computedPazar1 = ParsirajBrojIzStringa(p1.Length > 5 ? p1[5] : "0")
+                    + ParsirajBrojIzStringa(p1.Length > 6 ? p1[6] : "0")
+                    + ParsirajBrojIzStringa(p1.Length > 7 ? p1[7] : "0")
+                    + ParsirajBrojIzStringa(p1.Length > 9 ? p1[9] : "0")
+                    - ParsirajBrojIzStringa(p1.Length > 10 ? p1[10] : "0")
+                    - ParsirajBrojIzStringa(p1.Length > 11 ? p1[11] : "0");
+                decimal computedPazar2 = ParsirajBrojIzStringa(p2.Length > 5 ? p2[5] : "0")
+                    + ParsirajBrojIzStringa(p2.Length > 6 ? p2[6] : "0")
+                    + ParsirajBrojIzStringa(p2.Length > 7 ? p2[7] : "0")
+                    + ParsirajBrojIzStringa(p2.Length > 9 ? p2[9] : "0")
+                    - ParsirajBrojIzStringa(p2.Length > 10 ? p2[10] : "0")
+                    - ParsirajBrojIzStringa(p2.Length > 11 ? p2[11] : "0");
                 decimal ukupnoPazarComputed = computedPazar1 + computedPazar2;
 
                 StringBuilder html = new StringBuilder();
@@ -1882,7 +1848,7 @@ namespace ePopisV2
                 decimal ukupnoSank = sank1 + sank2;
                 decimal ukupnoDopuna = dopuna1 + dopuna2;
                 decimal ukupnoPodizanje = podizanje1 + podizanje2;
-                decimal ukupnoTroskovi = troskovi1 + troskovi2 + ukupniTroskoviPrva + ukupniTroskovi;
+                decimal ukupnoTroskovi = troskovi1 + troskovi2; //+ ukupniTroskoviPrva + ukupniTroskovi;
                 decimal ukupnoPazar = pazar1 + pazar2;
 
                 // Guest totals (safely parse if indices missing)

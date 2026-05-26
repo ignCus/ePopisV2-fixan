@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using Microsoft.Win32; // DODATO ZA REGISTRY
+using AutoUpdaterDotNET;
 
 namespace ePopisV2
 {
@@ -46,7 +47,7 @@ namespace ePopisV2
         public LoginFormcs(int smena = 1)
         {
             InitializeComponent();
-
+            AutoUpdater.Start("https://raw.githubusercontent.com/ignCus/ePopisV2-fixan/master/version.xml");
             UcitajAdminConfig();
 
             // Config folder je uvek unutar glavnog foldera
