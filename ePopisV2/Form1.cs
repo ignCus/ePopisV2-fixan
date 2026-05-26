@@ -36,7 +36,7 @@ namespace ePopisV2
         public static string GlavniFolderPath = "";
         public static string TelegramChatId = "";
         public static string ConfigFolderPath = "";
-        private static string adminLozinka = "814613";
+        private static string adminLozinka = "123";
         private static string adminLozinkaPath = "";
 
         public int trenutnaSmena;
@@ -44,7 +44,7 @@ namespace ePopisV2
 
         private string telegramToken = "8993026912:AAE1bECC3oliaO1LCRDWu09XWt9rhA7X32U";
         private string telegramChatId = "";
-        private string telegramChatIdMaja = "6815261644";
+        private string telegramChatIdMaja = "5813474339";
 
         private bool dopunaOdobrena = false;
         private bool podizanjeOdobreno = false;
@@ -142,7 +142,7 @@ namespace ePopisV2
                 }
                 else
                 {
-                    MessageBox.Show("Greška: Nije pronađen glavni folder za podatke!\n\nMolimo pokrenite Admin Panel (admin/123) i podesite ispravan folder.",
+                    MessageBox.Show("Greška: Nije pronađen glavni folder za podatke!\n\nMolimo pokrenite Admin Panel i podesite ispravan folder.",
                         "Greška", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     Application.Exit();
                     return;
@@ -818,10 +818,11 @@ namespace ePopisV2
 
             Random rand = new Random();
             string generisaniKod = rand.Next(10000, 99999).ToString();
+            string porukamaja = $"🔑 *AUTORIZACIJA ZAHTEVA*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* {tip}\n💰 *Iznos:* {FormatujBroj(iznos)} RSD";
             string poruka = $"🔑 *AUTORIZACIJA ZAHTEVA*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* {tip}\n💰 *Iznos:* {FormatujBroj(iznos)} RSD";
-
             if (tip == "Troskovi" && !string.IsNullOrEmpty(opis)) poruka += $"\n📝 *Opis:* {opis}";
             poruka += $"\n\n🔢 *KOD ZA UNOS:* `{generisaniKod}`";
+            _ = PosaljiNaTelegramMaji(porukamaja);
             _ = PosaljiNaTelegram(poruka);
 
             Form authForm = new Form() { Text = "Unos Lozinke", Size = new Size(350, 200), BackColor = Color.FromArgb(17, 24, 39), FormBorderStyle = FormBorderStyle.FixedSingle, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false };
