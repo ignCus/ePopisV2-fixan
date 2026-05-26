@@ -105,7 +105,11 @@ namespace ePopisV2
         // JAVNA STATICKA METODA ZA ČITANJE IZ POINTER FAJLA
         public static string CitajFolderIzPointerFajla()
         {
-            string exeConfigFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+            string exeConfigFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "ePopis",
+                    "Config"
+         );
             string pointerPath = Path.Combine(exeConfigFolder, "admin_config.json");
 
             if (File.Exists(pointerPath))
@@ -332,7 +336,11 @@ namespace ePopisV2
 
         private void UcitajAdminConfig()
         {
-            string exeConfigFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+            string exeConfigFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "ePopis",
+                    "Config"
+            );
             adminConfigPath = Path.Combine(exeConfigFolder, "admin_config.json");
 
             // ========== KORAK 1: Pokušaj iz pointer fajla ==========

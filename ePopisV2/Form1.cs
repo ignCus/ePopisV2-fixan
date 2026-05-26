@@ -15,6 +15,7 @@ using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using Microsoft.Win32;
+using AutoUpdaterDotNET;
 
 namespace ePopisV2
 {
@@ -768,7 +769,7 @@ namespace ePopisV2
             Random rand = new Random();
             string generisaniKod = rand.Next(10000, 99999).ToString();
             string poruka = $"🔑 *AUTORIZACIJA ZAHTEVA*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* {tip}\n💰 *Iznos:* {FormatujBroj(iznos)} RSD";
-            
+
             if (tip == "Troskovi" && !string.IsNullOrEmpty(opis)) poruka += $"\n📝 *Opis:* {opis}";
             poruka += $"\n\n🔢 *KOD ZA UNOS:* `{generisaniKod}`";
             _ = PosaljiNaTelegram(poruka);
@@ -820,10 +821,10 @@ namespace ePopisV2
             Random rand = new Random();
             string generisaniKod = rand.Next(10000, 99999).ToString();
             string poruka = $"🔑 *AUTORIZACIJA ZAHTEVA - INKASACIJA*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n\n🔢 *KOD ZA UNOS:* `{generisaniKod}`";
-            string porukamaja = $"🔑 *OBAVESTENJE O INKASACIJI*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n📊 *Stanje nakon inkasacije:* {FormatujBroj(trenutnoStanje-iznos)} RSD";
+            string porukamaja = $"🔑 *OBAVESTENJE O INKASACIJI*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n📊 *Stanje nakon inkasacije:* {FormatujBroj(trenutnoStanje - iznos)} RSD";
             _ = PosaljiNaTelegram(poruka);
             _ = PosaljiNaTelegramMaji(porukamaja);
-            
+
 
             Form authForm = new Form() { Text = "Unos Lozinke - Inkasacija", Size = new Size(350, 200), BackColor = Color.FromArgb(17, 24, 39), FormBorderStyle = FormBorderStyle.FixedSingle, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false };
             Label lblInfo = new Label() { Text = "Unesite kod sa Telegrama za INKASACIJU:", Location = new Point(20, 25), Size = new Size(300, 20), ForeColor = Color.White, Font = new Font("Segoe UI", 10) };
@@ -1789,7 +1790,7 @@ namespace ePopisV2
 
                 html.AppendLine($"<p>🎯 <strong>Završno stanje kase na kraju dana:</strong> <strong>{FormatujBroj(krajnjaKasa2)} RSD</strong></p>");
 
-               
+
                 // (signature moved to the end of the document)
 
                 // ========== LISTA TROŠKOVA PRVA SMENA ==========
@@ -2204,6 +2205,11 @@ namespace ePopisV2
 
             promenaForm.Controls.AddRange(new Control[] { lblStara, txtStara, lblNova, txtNova, lblPotvrda, txtPotvrda, btnSacuvaj, btnOdustani });
             promenaForm.ShowDialog();
+        }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            AutoUpdater.Start("https://raw.githubusercontent.com/ignCus/ePopisV2-fixan/master/version.xml");
         }
     }
 }

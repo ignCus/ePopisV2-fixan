@@ -421,7 +421,6 @@
             btnZavrsiSmenu.TabIndex = 48;
             btnZavrsiSmenu.Text = "Zavrsi Smenu";
             btnZavrsiSmenu.UseVisualStyleBackColor = false;
-            // Click handler is wired up in code to ensure single subscription when building UI dynamically
             // 
             // topPanel
             // 
@@ -579,6 +578,7 @@
             ForeColor = Color.White;
             Margin = new Padding(2);
             Name = "Form1";
+            Load += Form1_Load;
             TextChanged += IzracunajSve_TextChanged;
             topPanel.ResumeLayout(false);
             topPanel.PerformLayout();
