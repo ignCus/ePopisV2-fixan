@@ -139,7 +139,28 @@ namespace ePopisV2
             }
             catch { }
         }
+        private void AutoUpdaterOnCheckForUpdateEvent(UpdateInfoEventArgs args)
+        {
+            if (args.Error == null)
+            {
+                MessageBox.Show(
+                    $"Updater radi!\n\n" +
+                    $"Ima update: {args.IsUpdateAvailable}\n" +
+                    $"Trenutna verzija: {args.InstalledVersion}\n" +
+                    $"Nova verzija: {args.CurrentVersion}\n" +
+                    $"URL: {args.DownloadURL}"
+                );
 
+                if (args.IsUpdateAvailable)
+                {
+                    AutoUpdater.DownloadUpdate(args);
+                }
+            }
+            else
+            {
+                MessageBox.Show("Greška u updateru:\n\n" + args.Error.Message);
+            }
+        }
         private void SetupModerniDizajn()
         {
             var kontroleZaBrisanje = this.Controls.Cast<Control>()
@@ -933,28 +954,6 @@ namespace ePopisV2
             }
         }
 
-        private void AutoUpdaterOnCheckForUpdateEvent(UpdateInfoEventArgs args)
-        {
-            if (args.Error == null)
-            {
-                MessageBox.Show(
-                    $"Updater radi!\n\n" +
-                    $"Ima update: {args.IsUpdateAvailable}\n" +
-                    $"Trenutna verzija: {args.InstalledVersion}\n" +
-                    $"Nova verzija: {args.CurrentVersion}\n" +
-                    $"URL: {args.DownloadURL}"
-                );
-
-                if (args.IsUpdateAvailable)
-                {
-                    AutoUpdater.DownloadUpdate(args);
-                }
-            }
-            else
-            {
-                MessageBox.Show("Greška u updateru:\n\n" + args.Error.Message);
-            }
-        }
         private void BtnSacuvaj_Click(object sender, EventArgs e)
         {
             // --- Validacije ---
