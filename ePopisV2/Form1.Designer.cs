@@ -38,7 +38,6 @@
             smena1 = new TextBox();
             label7 = new Label();
             depozit1 = new TextBox();
-            label9 = new Label();
             label10 = new Label();
             label12 = new Label();
             label14 = new Label();
@@ -69,7 +68,6 @@
             depozitiLabel = new Label();
             operativaPanel = new Panel();
             operativaLabel = new Label();
-            label5 = new Label();
             topPanel.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)pictureBox1).BeginInit();
             finansijePanel.SuspendLayout();
@@ -179,17 +177,6 @@
             depozit1.ReadOnly = true;
             depozit1.Size = new Size(121, 27);
             depozit1.TabIndex = 13;
-            // 
-            // label9
-            // 
-            label9.AutoSize = true;
-            label9.ForeColor = Color.White;
-            label9.Location = new Point(535, 169);
-            label9.Margin = new Padding(2, 0, 2, 0);
-            label9.Name = "label9";
-            label9.Size = new Size(59, 20);
-            label9.TabIndex = 16;
-            label9.Text = "SMENA";
             // 
             // label10
             // 
@@ -481,7 +468,7 @@
             // 
             depozitiPanel.BackColor = Color.FromArgb(31, 41, 55);
             depozitiPanel.Controls.Add(depozitiLabel);
-            depozitiPanel.Location = new Point(356, 72);
+            depozitiPanel.Location = new Point(361, 72);
             depozitiPanel.Margin = new Padding(2);
             depozitiPanel.Name = "depozitiPanel";
             depozitiPanel.Size = new Size(320, 240);
@@ -521,16 +508,6 @@
             operativaLabel.TabIndex = 2;
             operativaLabel.Text = "OPERATIVA";
             // 
-            // label5
-            // 
-            label5.AutoSize = true;
-            label5.Location = new Point(651, 70);
-            label5.Margin = new Padding(2, 0, 2, 0);
-            label5.Name = "label5";
-            label5.Size = new Size(69, 20);
-            label5.TabIndex = 9;
-            label5.Text = "Smena 1:";
-            // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(8F, 20F);
@@ -563,10 +540,8 @@
             Controls.Add(label14);
             Controls.Add(label12);
             Controls.Add(label10);
-            Controls.Add(label9);
             Controls.Add(depozit1);
             Controls.Add(label7);
-            Controls.Add(label5);
             Controls.Add(smena1);
             Controls.Add(kodlokacije);
             Controls.Add(label4);
@@ -604,7 +579,6 @@
         private TextBox smena1;
         private Label label7;
         private TextBox depozit1;
-        private Label label9;
         private Label label10;
         private Label label12;
         private Label label14;
@@ -635,6 +609,5 @@
         private Label depozitiLabel;
         private Panel operativaPanel;
         private Label operativaLabel;
-        private Label label5;
     }
 }

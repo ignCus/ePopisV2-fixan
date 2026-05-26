@@ -301,7 +301,7 @@ namespace ePopisV2
                     }
                 }
 
-                string exePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config", "lokal_config.json");
+                string exePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ePopis", "Config", "lokal_config.json");
                 if (File.Exists(exePath))
                 {
                     string json = File.ReadAllText(exePath);
@@ -643,7 +643,7 @@ namespace ePopisV2
 
         public AdminPanelForm()
         {
-            exeConfigFolderPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config");
+            exeConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ePopis", "Config");
             if (!Directory.Exists(exeConfigFolderPath))
             {
                 Directory.CreateDirectory(exeConfigFolderPath);

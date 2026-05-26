@@ -76,6 +76,11 @@ namespace ePopisV2
         private string fiksniNazivLokacije = "";
         private decimal fiksniPocetniDepozit = 0;
         private decimal fiksniUtvrdjeniDepozit = 0;
+        // Track locally applied inkasacija to avoid double-counting in IzracunajSve
+        private DateTime? lastLocalInkasacijaDate = null;
+        private decimal? lastLocalInkasacijaAmount = null;
+        // When true, IzracunajSve will not overwrite stanjedepnakraju.Text (used right after IzvrsiInkasaciju)
+        private bool suppressStanjeOverwrite = false;
 
         public class LokalConfig
         {
@@ -83,6 +88,20 @@ namespace ePopisV2
             public string KodLokacije { get; set; }
             public decimal PocetniDepozit { get; set; }
             public decimal UtvrdjeniDepozit { get; set; }
+        }
+
+        private void ZapisiPrenosDepozita(decimal iznos, string source)
+        {
+            try
+            {
+                string prenosDepozitaPath = Path.Combine(ConfigFolderPath, "prenos_depozita.txt");
+                File.WriteAllText(prenosDepozitaPath, iznos.ToString(CultureInfo.InvariantCulture));
+                WriteDebug($"ZapisiPrenosDepozita: wrote {iznos} to {prenosDepozitaPath} from {source}");
+            }
+            catch (Exception ex)
+            {
+                WriteDebug($"ZapisiPrenosDepozita: failed to write prenos_depozita.txt from {source}: {ex.Message}");
+            }
         }
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -278,7 +297,7 @@ namespace ePopisV2
                 // Attempt same locations as UcitajFiksnePodatkeLokala
                 string[] pathsToTry = new[] {
                     lokalConfigPath,
-                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config", "lokal_config.json"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ePopis", "Config", "lokal_config.json"),
                     Path.Combine(GlavniFolderPath ?? "", "lokal_config.json")
                 };
 
@@ -354,10 +373,23 @@ namespace ePopisV2
 
                         WriteDebug($"Stanje učitano iz Registry (backup): {stanje} RSD, datum: {zadnjiDatum}");
 
-                        // Obnovi fajl
-                        string prenosPath = Path.Combine(ConfigFolderPath, "prenos_depozita.txt");
-                        File.WriteAllText(prenosPath, stanje.ToString());
-                        WriteDebug($"Obnovljen fajl prenos_depozita.txt: {stanje} RSD");
+                        // Obnovi fajl - restore starting deposit into prenos_depozita.
+                        // Prefer the registry-stored ZadnjiDepozit when available; otherwise fall back to stanjedepnakraju.
+                        try
+                        {
+                            decimal depositToRestore = 0;
+                            if (!string.IsNullOrWhiteSpace(zadnjiDepozit))
+                            {
+                                var clean = new string(zadnjiDepozit.Where(c => char.IsDigit(c) || c == '-').ToArray());
+                                if (!string.IsNullOrWhiteSpace(clean) && decimal.TryParse(clean, out decimal parsed)) depositToRestore = parsed;
+                            }
+                            if (depositToRestore == 0) depositToRestore = stanje;
+                            ZapisiPrenosDepozita(depositToRestore, "UcitajStanjeIzRegistry");
+                        }
+                        catch (Exception ex)
+                        {
+                            WriteDebug($"Failed to restore prenos_depozita from registry deposit: {ex.Message}");
+                        }
                     }
                     else
                     {
@@ -423,7 +455,7 @@ namespace ePopisV2
             // Fallback 1: exe Config pointer (useful when launching directly)
             try
             {
-                string exeConfigPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Config", "lokal_config.json");
+                string exeConfigPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ePopis", "Config", "lokal_config.json");
                 WriteDebug($"UcitajFiksnePodatkeLokala: trying exe config path: {exeConfigPath}");
                 if (File.Exists(exeConfigPath))
                 {
@@ -575,7 +607,7 @@ namespace ePopisV2
             label18.Text = "Stanje na kraju:"; label18.Location = new Point(15, startY + spacing * 2); label18.Size = new Size(labelWidth, 28);
             stanjedepnakraju.Location = new Point(textBoxX, startY + spacing * 2); stanjedepnakraju.Size = new Size(textBoxWidth, 28); stanjedepnakraju.BackColor = Color.FromArgb(55, 65, 81); stanjedepnakraju.ForeColor = Color.White; stanjedepnakraju.BorderStyle = BorderStyle.FixedSingle; stanjedepnakraju.ReadOnly = true;
 
-            label5.Text = "Radnik:"; label5.Location = new Point(15, startY + spacing * 3); label5.Size = new Size(labelWidth, 28);
+            Label lblRadnik = new Label() { Text = "Radnik:", ForeColor = Color.White, Location = new Point(15, startY + spacing * 3), Size = new Size(labelWidth, 28) };
             smena1.Location = new Point(textBoxX, startY + spacing * 3); smena1.Size = new Size(textBoxWidth, 28); smena1.BackColor = Color.FromArgb(55, 65, 81); smena1.ForeColor = Color.White; smena1.BorderStyle = BorderStyle.FixedSingle; smena1.ReadOnly = true;
 
             label2.Text = "Lokacija:"; label2.Location = new Point(15, startY + spacing * 4); label2.Size = new Size(labelWidth, 28);
@@ -587,7 +619,7 @@ namespace ePopisV2
             operativaPanel.Controls.Add(label3); operativaPanel.Controls.Add(utvrdjeniDepozit);
             operativaPanel.Controls.Add(label11); operativaPanel.Controls.Add(depozit);
             operativaPanel.Controls.Add(label18); operativaPanel.Controls.Add(stanjedepnakraju);
-            operativaPanel.Controls.Add(label5); operativaPanel.Controls.Add(smena1);
+            operativaPanel.Controls.Add(lblRadnik); operativaPanel.Controls.Add(smena1);
             operativaPanel.Controls.Add(label2); operativaPanel.Controls.Add(lokacija);
             operativaPanel.Controls.Add(label4); operativaPanel.Controls.Add(kodlokacije);
 
@@ -731,16 +763,68 @@ namespace ePopisV2
             // Exclude sank (s) from main pazar racunica; sank has separate racunica
             pazarSmeneValue = (k + kl + l + dop) - (pod + tro);
             decimal konacnoUKasi = pocetniDepozit + pazarSmeneValue;
+            // If an inkasacija was performed today, subtract it from the cash-on-hand so the form shows accurate end state
+            try
+            {
+                string zadnjaInkasacijaPath = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt");
+                if (File.Exists(zadnjaInkasacijaPath))
+                {
+                    var raw = File.ReadAllText(zadnjaInkasacijaPath).Trim();
+                    if (!string.IsNullOrEmpty(raw) && raw.Contains("|"))
+                    {
+                        var parts = raw.Split('|');
+                        if (parts.Length >= 2)
+                        {
+                            if (DateTime.TryParseExact(parts[0], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime inkDate))
+                            {
+                                if (inkDate.Date == dateTimePicker1.Value.Date)
+                                {
+                                    if (decimal.TryParse(parts[parts.Length - 1], out decimal tmp))
+                                    {
+                                        bool alreadyApplied = false;
+                                        try
+                                        {
+                                            if (lastLocalInkasacijaDate.HasValue && lastLocalInkasacijaAmount.HasValue)
+                                            {
+                                                if (lastLocalInkasacijaDate.Value == inkDate.Date && lastLocalInkasacijaAmount.Value == tmp)
+                                                {
+                                                    alreadyApplied = true;
+                                                }
+                                            }
+                                        }
+                                        catch { }
+
+                                        if (!alreadyApplied)
+                                        {
+                                            konacnoUKasi -= tmp;
+                                            try { lastLocalInkasacijaDate = inkDate.Date; lastLocalInkasacijaAmount = tmp; } catch { }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
             // UI: show total sank (persisted + current shift). Keep internal pazarSmeneValue for reports.
             decimal totalSankDisplay = sankTotalPersisted + s;
             depozit.Text = FormatujBroj(totalSankDisplay);
-            stanjedepnakraju.Text = FormatujBroj(konacnoUKasi);
+            // Only overwrite displayed end state when not suppressed (after manual update by IzvrsiInkasaciju)
+            if (!suppressStanjeOverwrite)
+            {
+                stanjedepnakraju.Text = FormatujBroj(konacnoUKasi);
+            }
             // Update suggested inkasacija placeholder based on utvrdjeni depozit
             UpdateInkasacijaPlaceholder(konacnoUKasi, totalSankDisplay);
-            SnimiUTempFajl();
+            // Persist temp state and registry only when not suppressed to avoid clobbering immediate inkasacija UI changes
+            if (!suppressStanjeOverwrite)
+            {
+                SnimiUTempFajl();
 
-            // Sačuvaj stanje u Registry pri svakoj promeni
-            SacuvajStanjeURegistry();
+                // Sačuvaj stanje u Registry pri svakoj promeni
+                SacuvajStanjeURegistry();
+            }
         }
 
         private void PokreniAutorizacijuSaOpisom()
@@ -893,14 +977,13 @@ namespace ePopisV2
 
         private void IzvrsiInkasaciju(decimal iznosInkasacije)
         {
+            // Do not directly set stanjedepnakraju here — rely on IzracunajSve to recompute the
+            // canonical end-of-day state after writing the dated inkasacija. This prevents
+            // later recalculations from overwriting the manual change or causing double application.
             decimal trenutnoStanje = GetValue(stanjedepnakraju);
             decimal novoStanje = trenutnoStanje - iznosInkasacije;
-            stanjedepnakraju.Text = FormatujBroj(novoStanje);
 
-            string prenosDepozitaPath = Path.Combine(ConfigFolderPath, "prenos_depozita.txt");
             string zadnjaInkasacijaPath = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt");
-
-            File.WriteAllText(prenosDepozitaPath, novoStanje.ToString());
             // Save inkasacija with date so it is shown only on the day it was performed
             // Format: yyyy-MM-dd|amount
             try
@@ -922,10 +1005,31 @@ namespace ePopisV2
                 WriteDebug($"Sank ukupno reset to 0 after inkasacija.");
             }
             catch { }
-            depozit1.Text = FormatujBroj(novoStanje);
+            // Also clear current shift sank textbox so displayed šank becomes zero
+            try { sank.Text = "0"; depozit.Text = FormatujBroj(sankTotalPersisted + GetValue(sank)); } catch { }
+            // Immediately update displayed end-of-day state (do not change pocetni depozit)
+            try
+            {
+                stanjedepnakraju.Text = FormatujBroj(novoStanje);
+                WriteDebug($"IzvrsiInkasaciju: updated stanjedepnakraju to {novoStanje}");
+            }
+            catch { }
+
+            // Mark applied locally BEFORE calling IzracunajSve so the file-based reader
+            // does not subtract the same inkasacija again (avoid double-subtraction).
+            try
+            {
+                lastLocalInkasacijaDate = DateTime.Now.Date;
+                lastLocalInkasacijaAmount = iznosInkasacije;
+            }
+            catch { }
+
+            // Persist temporary state (so UI state is preserved) and then recalc to refresh other fields
             SnimiUTempFajl();
-            // Refresh UI values after sank reset
+            // Prevent IzracunajSve from overwriting the manually updated stanjedepnakraju
+            suppressStanjeOverwrite = true;
             IzracunajSve();
+            suppressStanjeOverwrite = false;
             WriteDebug($"INKASACIJA: Staro stanje={trenutnoStanje}, Inkasirano={iznosInkasacije}, Novo stanje={novoStanje}");
             MessageBox.Show($"✅ Inkasacija uspešno obavljena!\n\nPrethodno stanje: {FormatujBroj(trenutnoStanje)} RSD\nInkasirano: {FormatujBroj(iznosInkasacije)} RSD\nNovo stanje: {FormatujBroj(novoStanje)} RSD", "Inkasacija", MessageBoxButtons.OK, MessageBoxIcon.Information);
             inkasacija.Text = ""; inkasacijaOdobrena = false;
@@ -1112,6 +1216,7 @@ namespace ePopisV2
 
             WriteDebug("\n========== ZAVRSAVANJE SMENE ==========");
 
+
             string[] podaci = {
                 DateTime.Now.ToString("dd.MM.yyyy"), smena1.Text, lokacija.Text, kodlokacije.Text,
                 trenutnaSmena.ToString(),
@@ -1126,9 +1231,37 @@ namespace ePopisV2
                 SerijalizujTroskove(), inkasacijaOdobrena.ToString()
             };
 
-            decimal krajnjeStanje = GetValue(stanjedepnakraju);
-            string prenosDepozitaPath = Path.Combine(ConfigFolderPath, "prenos_depozita.txt");
-            File.WriteAllText(prenosDepozitaPath, krajnjeStanje.ToString());
+            // Compute persisted krajnje stanje explicitly so we persist the value AFTER inkasacija
+            // even if IzracunajSve skipped subtraction due to local tracking.
+            decimal persistedKrajnje = GetValue(depozit1) + pazarSmeneValue;
+            try
+            {
+                string zadnjaInkasacijaPath = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt");
+                if (File.Exists(zadnjaInkasacijaPath))
+                {
+                    var raw = File.ReadAllText(zadnjaInkasacijaPath).Trim();
+                    WriteDebug($"btnZavrsiSmenu: read zadnja_inkasacija raw='{raw}'");
+                    if (!string.IsNullOrEmpty(raw) && raw.Contains("|"))
+                    {
+                        var parts = raw.Split('|');
+                        if (parts.Length >= 2 && DateTime.TryParseExact(parts[0], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime inkDate))
+                        {
+                            if (inkDate.Date == dateTimePicker1.Value.Date && decimal.TryParse(parts[parts.Length - 1], out decimal tmp))
+                            {
+                                persistedKrajnje -= tmp;
+                                WriteDebug($"btnZavrsiSmenu: applied inkasacija {tmp} to persistedKrajnje");
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteDebug($"btnZavrsiSmenu: failed to read/apply zadnja_inkasacija: {ex.Message}");
+            }
+
+            // Persist only at end of shift: write krajnje stanje as the next session's starting deposit
+            ZapisiPrenosDepozita(persistedKrajnje, "btnZavrsiSmenu");
             try
             {
                 decimal currentSank = GetValue(sank);
@@ -1513,6 +1646,7 @@ namespace ePopisV2
                 decimal matematickiSank = originalSank - bazaSank;
 
                 decimal inkasiraniIznos = 0;
+                int inkasacijaShift = 0; // 0 = unspecified, 1 or 2 if present in file
                 string zadnjaInkasacijaPath = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt");
                 if (File.Exists(zadnjaInkasacijaPath))
                 {
@@ -1523,7 +1657,7 @@ namespace ePopisV2
                         {
                             // Supported formats:
                             // 1) yyyy-MM-dd|amount
-                            // 2) yyyy-MM-dd|shift|amount (shift ignored for global reporting)
+                            // 2) yyyy-MM-dd|shift|amount (shift will be used to adjust per-shift displayed balance)
                             // 3) legacy: plain number -> check file last write date
                             if (raw.Contains("|"))
                             {
@@ -1537,6 +1671,14 @@ namespace ePopisV2
                                             // amount is last part
                                             if (decimal.TryParse(parts[parts.Length - 1], out decimal amount))
                                                 inkasiraniIznos = amount;
+                                            // if parts contain a middle value, try parse as shift (1 or 2)
+                                            if (parts.Length >= 3)
+                                            {
+                                                if (int.TryParse(parts[1], out int ish))
+                                                {
+                                                    if (ish == 1 || ish == 2) inkasacijaShift = ish;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1557,6 +1699,31 @@ namespace ePopisV2
             dopunaOdobrena.ToString(), podizanjeOdobreno.ToString(),
             SerijalizujTroskove(), inkasacijaOdobrena.ToString(), inkasiraniIznos.ToString()
         };
+
+                // Prepare displayed krajnja kasa per shift, subtract inkasacija if it belongs to that shift
+                decimal displayKraj1 = ParsirajBrojIzStringa(p1.Length > 14 ? p1[14] : "0");
+                decimal displayKraj2 = ParsirajBrojIzStringa(p2.Length > 14 ? p2[14] : "0");
+                // inkasacijaShift parsed earlier (0 = unknown -> apply to second shift)
+                try
+                {
+                    if (inkasiraniIznos > 0)
+                    {
+                        if (inkasacijaShift == 1)
+                        {
+                            displayKraj1 -= inkasiraniIznos;
+                        }
+                        else if (inkasacijaShift == 2)
+                        {
+                            displayKraj2 -= inkasiraniIznos;
+                        }
+                        else
+                        {
+                            // no shift specified -> assume applies to second shift (end of day)
+                            displayKraj2 -= inkasiraniIznos;
+                        }
+                    }
+                }
+                catch { }
 
                 string monthlyFolder = GetMonthlyFolderPath();
                 string fileName = $"Dnevni_Izvestaj_{dateTimePicker1.Value.ToString("dd_MM_yyyy")}.html";
@@ -1732,7 +1899,8 @@ namespace ePopisV2
                 int totalGuestsOnline = guestO1 + guestO2;
                 int totalGuestsDay = totalGuestsAparati + totalGuestsKladionica + totalGuestsOnline;
 
-                decimal teoretskoStanje = pocetnaKasa1 + ukupnoPazar;
+                // Include inkasacija in theoretical calculation: subtract inkasiraniIznos from expected cash
+                decimal teoretskoStanje = pocetnaKasa1 + ukupnoPazarComputed - inkasiraniIznos;
                 decimal razlika = krajnjaKasa2 - teoretskoStanje;
 
                 html.AppendLine("<h2>📈 UKUPNA STATISTIKA ZA CELI DAN</h2>");
@@ -1784,7 +1952,6 @@ namespace ePopisV2
                 {
                     html.AppendLine("<div class='inkasacija'>");
                     html.AppendLine($"<p>🏦 <strong>INKASACIJA U BANKU:</strong> <strong style='color:#856404;'>{FormatujBroj(inkasiraniIznos)} RSD</strong></p>");
-                    html.AppendLine($"<p>💳 <strong>Stanje kase NAKON inkasacije:</strong> {FormatujBroj(krajnjaKasa2 - inkasiraniIznos)} RSD</p>");
                     html.AppendLine("</div>");
                 }
 
@@ -2210,6 +2377,11 @@ namespace ePopisV2
         private void Form1_Load(object sender, EventArgs e)
         {
             AutoUpdater.Start("https://raw.githubusercontent.com/ignCus/ePopisV2-fixan/master/version.xml");
+        }
+
+        private void label9_Click(object sender, EventArgs e)
+        {
+
         }
     }
 }
