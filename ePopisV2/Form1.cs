@@ -36,7 +36,7 @@ namespace ePopisV2
         public static string GlavniFolderPath = "";
         public static string TelegramChatId = "";
         public static string ConfigFolderPath = "";
-        private static string adminLozinka = "admin123";
+        private static string adminLozinka = "814613";
         private static string adminLozinkaPath = "";
 
         public int trenutnaSmena;
