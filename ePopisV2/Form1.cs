@@ -1915,7 +1915,7 @@ namespace ePopisV2
                 html.AppendLine("<h3>💰 KONAČNO STANJE KASE ZA DAN</h3>");
                 html.AppendLine($"<p>💵 <strong>Početno stanje kase (početak Prve smene):</strong> {FormatujBroj(pocetnaKasa1)} RSD</p>");
                 html.AppendLine($"<p>📊 <strong>Ukupan ostvareni pazar u obe smene:</strong> {FormatujBroj(ukupnoPazarComputed)} RSD</p>");
-                html.AppendLine($"<p>➕ <strong>Ukupan šank stanje:</strong> {FormatujBroj(ukupnoPazar)} RSD</p>");
+                html.AppendLine($"<p>➕ <strong>Ukupan šank stanje:</strong> {FormatujBroj(sankTotalPersisted)} RSD</p>");
 
 
                 if (inkasiraniIznos > 0)
