@@ -553,6 +553,7 @@
             ForeColor = Color.White;
             Margin = new Padding(2);
             Name = "Form1";
+           
             Load += Form1_Load;
             TextChanged += IzracunajSve_TextChanged;
             topPanel.ResumeLayout(false);

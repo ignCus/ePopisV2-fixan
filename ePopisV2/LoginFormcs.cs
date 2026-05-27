@@ -641,6 +641,8 @@ namespace ePopisV2
             public string GlavniFolderPath { get; set; }
         }
 
+
+
         public AdminPanelForm()
         {
             exeConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ePopis", "Config");

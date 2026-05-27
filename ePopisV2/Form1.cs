@@ -953,11 +953,19 @@ namespace ePopisV2
             string zadnjaInkasacijaPath = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt");
             // Save inkasacija with date so it is shown only on the day it was performed
             // Format: yyyy-MM-dd|amount
-            try
-            {
-                File.WriteAllText(zadnjaInkasacijaPath, $"{DateTime.Now:yyyy-MM-dd}|{iznosInkasacije}");
-            }
-            catch { }
+                try
+                {
+                    // Include the shift number so reports can attribute inkasacija to the correct smena
+                    File.WriteAllText(zadnjaInkasacijaPath, $"{DateTime.Now:yyyy-MM-dd}|{trenutnaSmena}|{iznosInkasacije}");
+                    // Also append to a persistent journal so first-shift deletions won't lose the record
+                    try
+                    {
+                        string journal = Path.Combine(ConfigFolderPath, "inkasacija_journal.txt");
+                        File.AppendAllText(journal, $"{DateTime.Now:yyyy-MM-dd}|{trenutnaSmena}|{iznosInkasacije}{Environment.NewLine}");
+                    }
+                    catch { }
+                }
+                catch { }
             // Reset persisted sank total on inkasacija (reset sank_ukupno.txt)
             try
             {
@@ -1647,6 +1655,41 @@ namespace ePopisV2
                     }
                     catch { }
                 }
+                // Fallback: if zadnja_inkasacija.txt missing or didn't contain today's inkasacija,
+                // try read last matching entry from inkasacija_journal.txt (journal is appended on each inkasacija).
+                if (inkasiraniIznos == 0)
+                {
+                    try
+                    {
+                        string journalPath = Path.Combine(ConfigFolderPath, "inkasacija_journal.txt");
+                        if (File.Exists(journalPath))
+                        {
+                            var allLines = File.ReadAllLines(journalPath);
+                            string targetDate = dateTimePicker1.Value.ToString("yyyy-MM-dd");
+                            for (int i = allLines.Length - 1; i >= 0; i--)
+                            {
+                                var line = allLines[i].Trim();
+                                if (string.IsNullOrEmpty(line)) continue;
+                                if (!line.Contains("|")) continue;
+                                var parts = line.Split('|');
+                                if (parts.Length >= 3 && parts[0] == targetDate)
+                                {
+                                    // parts: yyyy-MM-dd|shift|amount
+                                    if (int.TryParse(parts[1], out int ish))
+                                    {
+                                        if (ish == 1 || ish == 2) inkasacijaShift = ish;
+                                    }
+                                    if (decimal.TryParse(parts[parts.Length - 1], out decimal amt))
+                                    {
+                                        inkasiraniIznos = amt;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
 
                 string[] p2 = {
             DateTime.Now.ToString("dd.MM.yyyy"), smena1.Text, lokacija.Text, kodlokacije.Text,
@@ -1923,7 +1966,10 @@ namespace ePopisV2
                     html.AppendLine("<div class='inkasacija'>");
                     html.AppendLine($"<p>🏦 <strong>INKASACIJA U BANKU:</strong> <strong style='color:#856404;'>{FormatujBroj(inkasiraniIznos)} RSD</strong></p>");
                     html.AppendLine("</div>");
+                    
+                   
                 }
+             
 
                 html.AppendLine($"<p>🎯 <strong>Završno stanje kase na kraju dana:</strong> <strong>{FormatujBroj(krajnjaKasa2)} RSD</strong></p>");
 
@@ -2161,6 +2207,16 @@ namespace ePopisV2
                 MessageBox.Show("❌ Greška prilikom generisanja izveštaja: " + ex.Message, "Sistemska Greška", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+       /* private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            // Check if the user clicked the 'X' button or used Task Manager's 'End Task'
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                // Immediately terminate the process and remove it from Task Manager
+                Environment.Exit(0);
+            }
+        }*/
+
 
         private decimal ParsirajBrojIzStringa(string text)
         {
