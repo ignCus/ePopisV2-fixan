@@ -1873,7 +1873,7 @@ namespace ePopisV2
                 decimal teoretskoStanje = pocetnaKasa1 + ukupnoPazarComputed - inkasiraniIznos;
                 decimal razlika = krajnjaKasa2 - teoretskoStanje;
 
-                html.AppendLine("<h2>📈 UKUPNA STATISTIKA ZA CELI DAN</h2>");
+                html.AppendLine("<h2>📈 UKUPNA STATISTIKA ZA CEO DAN</h2>");
 
                 html.AppendLine("<table border='1'>");
                 html.AppendLine("<thead>");
