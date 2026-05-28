@@ -44,7 +44,7 @@ namespace ePopisV2
 
         private string telegramToken = "8993026912:AAE1bECC3oliaO1LCRDWu09XWt9rhA7X32U";
         private string telegramChatId = "";
-        private string telegramChatIdMaja = "5813474339";
+ private string telegramChatIdMaja = "58134743393";
 
         private bool dopunaOdobrena = false;
         private bool podizanjeOdobreno = false;
@@ -266,6 +266,17 @@ namespace ePopisV2
             TryLoadAndApplyUtvrdjeniDepozit();
             // Ensure inkasacija textbox is not auto-filled with '0' on startup
             ClearInkasacijaIfZero();
+
+            // Ensure the process fully exits when the main form is closed by the user
+            this.FormClosing += (s, e) =>
+            {
+                try
+                {
+                    try { System.Windows.Forms.Application.Exit(); } catch { }
+                    try { Environment.Exit(0); } catch { }
+                }
+                catch { }
+            };
         }
 
         private void ClearInkasacijaIfZero()
@@ -1420,7 +1431,21 @@ namespace ePopisV2
                     // launches or next-day sessions do not subtract it again from the persisted starting deposit.
                     try { var zad = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt"); if (File.Exists(zad)) { File.Delete(zad); WriteDebug("End of day: deleted zadnja_inkasacija.txt after report"); } } catch { }
 
-                    // Sačekaj još 10s dok je aplikacija sakrivena pre gašenja
+                    // Immediately mark next saved smena as 1 so that if the process is killed
+                    // (operator closes preview and kills the app before the final wait) the
+                    // next launch will not incorrectly start as smena 2.
+                    try
+                    {
+                        string smenaPathImmediate = Path.Combine(ConfigFolderPath, "smena_config.txt");
+                        File.WriteAllText(smenaPathImmediate, "1");
+                        WriteDebug($"Immediately saved next smena in file: {smenaPathImmediate} -> 1");
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteDebug($"Greška pri trenutnom čuvanju smene: {ex.Message}");
+                    }
+
+                    // Sačekaj još 10s dok je aplikacija sakrivena pre gašenja (optional grace period)
                     try
                     {
                         WriteDebug("Čeka 10s nakon skrivenog rada pre gašenja...");
@@ -2144,6 +2169,18 @@ namespace ePopisV2
                                 };
 
                                 btnClose.Click += (bs, be) => { previewForm.Close(); };
+
+                                // If the user closes the preview window (X) force the whole app to exit
+                                previewForm.FormClosing += (fs, fe) =>
+                                {
+                                    try
+                                    {
+                                        try { wb.Dispose(); } catch { }
+                                        try { System.Windows.Forms.Application.Exit(); } catch { }
+                                        try { Environment.Exit(0); } catch { }
+                                    }
+                                    catch { }
+                                };
 
                                 // Show preview as modal dialog so execution waits until user closes
                                 try

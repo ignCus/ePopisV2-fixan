@@ -101,6 +101,19 @@ namespace ePopisV2
             }
 
             SetupModerniDizajn();
+
+            // Ensure process fully exits when the user closes the login form
+            this.FormClosing += (s, e) =>
+            {
+                try
+                {
+                    // Ask application to close all message loops and windows
+                    try { System.Windows.Forms.Application.Exit(); } catch { }
+                    // Force process termination as a last resort
+                    try { Environment.Exit(0); } catch { }
+                }
+                catch { }
+            };
         }
 
         // JAVNA STATICKA METODA ZA ČITANJE IZ POINTER FAJLA

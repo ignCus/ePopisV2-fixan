@@ -42,6 +42,10 @@ namespace ePopisV2
 
             // Pokrećemo login formu sa ispravnom, zapamćenom smenom
             Application.Run(new LoginFormcs(pocetnaSmena));
+
+            // Ensure the process fully terminates when the message loop ends
+            // (prevents the app from lingering in Task Manager if background threads are alive)
+            Environment.Exit(0);
         }
     }
 }
