@@ -44,7 +44,7 @@ namespace ePopisV2
 
         private string telegramToken = "8993026912:AAE1bECC3oliaO1LCRDWu09XWt9rhA7X32U";
         private string telegramChatId = "";
- private string telegramChatIdMaja = "58134743393";
+ private string telegramChatIdMaja = "5813474339";
 
         private bool dopunaOdobrena = false;
         private bool podizanjeOdobreno = false;
