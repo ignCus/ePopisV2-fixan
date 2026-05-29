@@ -11,6 +11,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Drawing;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
@@ -84,6 +85,151 @@ namespace ePopisV2
             public string KodLokacije { get; set; }
             public decimal PocetniDepozit { get; set; }
             public decimal UtvrdjeniDepozit { get; set; }
+        }
+
+        // End-shift idempotency journal (JSON lines with HMAC)
+        private byte[] journalHmacKey = null;
+        private TimeSpan endShiftStartedStaleWindow = TimeSpan.FromMinutes(30);
+
+        private string GetEndShiftJournalPath()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(ConfigFolderPath)) return Path.Combine(Path.GetTempPath(), "endshift_journal.jsonl");
+                return Path.Combine(ConfigFolderPath, "endshift_journal.jsonl");
+            }
+            catch { return Path.Combine(Path.GetTempPath(), "endshift_journal.jsonl"); }
+        }
+
+        private string GetJournalKeyPath()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(ConfigFolderPath)) return Path.Combine(Path.GetTempPath(), "endshift_journal_key.bin");
+                return Path.Combine(ConfigFolderPath, "endshift_journal_key.bin");
+            }
+            catch { return Path.Combine(Path.GetTempPath(), "endshift_journal_key.bin"); }
+        }
+
+        private void EnsureJournalKey()
+        {
+            try
+            {
+                if (journalHmacKey != null) return;
+                string keyPath = GetJournalKeyPath();
+                if (File.Exists(keyPath))
+                {
+                    try
+                    {
+                        var protectedBytes = File.ReadAllBytes(keyPath);
+                        journalHmacKey = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
+                        return;
+                    }
+                    catch (Exception ex) { WriteDebug($"EnsureJournalKey: failed to unprotect key: {ex.Message}"); }
+                }
+
+                // create new random key (32 bytes) and protect it
+                using (var rng = RandomNumberGenerator.Create())
+                {
+                    var key = new byte[32];
+                    rng.GetBytes(key);
+                    try
+                    {
+                        var protectedBytes = ProtectedData.Protect(key, null, DataProtectionScope.CurrentUser);
+                        File.WriteAllBytes(keyPath, protectedBytes);
+                        journalHmacKey = key;
+                        return;
+                    }
+                    catch (Exception ex) { WriteDebug($"EnsureJournalKey: failed to protect/write key: {ex.Message}"); journalHmacKey = key; }
+                }
+            }
+            catch (Exception ex) { WriteDebug($"EnsureJournalKey error: {ex.Message}"); }
+        }
+
+        private string ComputeHmacHex(string payload)
+        {
+            try
+            {
+                EnsureJournalKey();
+                if (journalHmacKey == null) return "";
+                using (var h = new HMACSHA256(journalHmacKey))
+                {
+                    var bytes = Encoding.UTF8.GetBytes(payload);
+                    var mac = h.ComputeHash(bytes);
+                    return BitConverter.ToString(mac).Replace("-", "").ToLowerInvariant();
+                }
+            }
+            catch (Exception ex) { WriteDebug($"ComputeHmacHex error: {ex.Message}"); }
+            return "";
+        }
+
+        private class EndShiftRecord
+        {
+            public string Key { get; set; }
+            public string Status { get; set; }
+            public DateTime Timestamp { get; set; }
+            public int PID { get; set; }
+            public string User { get; set; }
+            public decimal? Delta { get; set; }
+            public decimal? Total { get; set; }
+            public string Details { get; set; }
+            public string Hmac { get; set; }
+        }
+
+        private bool IsEndShiftAlreadyProcessed(string key)
+        {
+            try
+            {
+                string path = GetEndShiftJournalPath();
+                if (!File.Exists(path)) return false;
+                var lines = File.ReadAllLines(path);
+                foreach (var l in lines)
+                {
+                    if (string.IsNullOrWhiteSpace(l)) continue;
+                    try
+                    {
+                        var rec = JsonSerializer.Deserialize<EndShiftRecord>(l);
+                        if (rec == null) continue;
+                        // verify hmac
+                        var clone = new EndShiftRecord { Key = rec.Key, Status = rec.Status, Timestamp = rec.Timestamp, PID = rec.PID, User = rec.User, Delta = rec.Delta, Total = rec.Total, Details = rec.Details };
+                        var payload = JsonSerializer.Serialize(clone);
+                        var expected = ComputeHmacHex(payload);
+                        if (string.IsNullOrEmpty(expected) || string.IsNullOrEmpty(rec.Hmac) || !string.Equals(expected, rec.Hmac, StringComparison.OrdinalIgnoreCase))
+                        {
+                            WriteDebug($"IsEndShiftAlreadyProcessed: skipped record due to invalid hmac for key={rec.Key}");
+                            continue;
+                        }
+                        if (rec.Key == key)
+                        {
+                            if (string.Equals(rec.Status, "completed", StringComparison.OrdinalIgnoreCase)) return true;
+                            if (string.Equals(rec.Status, "started", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (DateTime.Now - rec.Timestamp < endShiftStartedStaleWindow) return true;
+                                else continue;
+                            }
+                        }
+                    }
+                    catch (Exception ex) { WriteDebug($"IsEndShiftAlreadyProcessed: parse error: {ex.Message}"); }
+                }
+            }
+            catch (Exception ex) { WriteDebug($"IsEndShiftAlreadyProcessed error: {ex.Message}"); }
+            return false;
+        }
+
+        private void AppendEndShiftJournalEntry(string key, string status, string details = "", decimal? delta = null, decimal? total = null)
+        {
+            try
+            {
+                EnsureJournalKey();
+                var rec = new EndShiftRecord { Key = key, Status = status, Timestamp = DateTime.Now, PID = Process.GetCurrentProcess().Id, User = Environment.UserName, Delta = delta, Total = total, Details = details };
+                // compute hmac over payload without hmac field
+                var payload = JsonSerializer.Serialize(new EndShiftRecord { Key = rec.Key, Status = rec.Status, Timestamp = rec.Timestamp, PID = rec.PID, User = rec.User, Delta = rec.Delta, Total = rec.Total, Details = rec.Details });
+                rec.Hmac = ComputeHmacHex(payload);
+                string path = GetEndShiftJournalPath();
+                var line = JsonSerializer.Serialize(rec) + Environment.NewLine;
+                File.AppendAllText(path, line);
+            }
+            catch (Exception ex) { WriteDebug($"AppendEndShiftJournalEntry error: {ex.Message}"); }
         }
 
         private void ZapisiPrenosDepozita(decimal iznos, string source)
@@ -1238,17 +1384,113 @@ namespace ePopisV2
                 string prenosSankPath = Path.Combine(ConfigFolderPath, "prenos_sanka.txt");
                 string sankPath = Path.Combine(ConfigFolderPath, "sank_total.txt");
 
-                if (trenutnaSmena == 1)
+                // Build idempotency key: date|shift|location
+                string dateKey = dateTimePicker1.Value.ToString("yyyy-MM-dd");
+                string locKey = string.IsNullOrWhiteSpace(kodlokacije.Text) ? "unknown" : Regex.Replace(kodlokacije.Text, "[^a-zA-Z0-9_-]", "_");
+                string endShiftKey = $"{dateKey}|{trenutnaSmena}|{locKey}";
+
+                // Named mutex to protect file operations across processes
+                string mutexName = $"Global\\ePopis_EndShift_{locKey}_{dateKey}";
+                bool mutexAcquired = false;
+                Mutex mutex = null;
+                try
                 {
-                    // Save first shift sank value for later delta computation
                     try
                     {
-                        if (!File.Exists(prvaSmenaSankPath))
-                        {
-                            File.WriteAllText(prvaSmenaSankPath, currentSank.ToString(CultureInfo.InvariantCulture));
-                            WriteDebug($"btnZavrsiSmenu: Saved first shift sank value {currentSank} to prva_smena_sank.txt");
+                        mutex = new Mutex(false, mutexName);
+                        // wait short time to avoid UI hang; if not acquired then we'll still check journal
+                        mutexAcquired = mutex.WaitOne(5000);
+                        WriteDebug($"btnZavrsiSmenu: mutex wait returned acquired={mutexAcquired} for {mutexName}");
+                    }
+                    catch (AbandonedMutexException)
+                    {
+                        // Previous owner died — we can proceed but note it
+                        mutexAcquired = true;
+                        WriteDebug("btnZavrsiSmenu: AbandonedMutexException caught — treating as acquired");
+                    }
 
-                            // Also add current first-shift sank to the running total so UI shows it immediately
+                    // Check journal for prior processing
+                    if (IsEndShiftAlreadyProcessed(endShiftKey))
+                    {
+                        WriteDebug($"btnZavrsiSmenu: detected endshift already processed for key={endShiftKey}, skipping sank update.");
+                        AppendEndShiftJournalEntry(endShiftKey, "skipped", "already processed");
+                    }
+                    else
+                    {
+                        AppendEndShiftJournalEntry(endShiftKey, "started", currentSank.ToString(CultureInfo.InvariantCulture));
+
+                        if (trenutnaSmena == 1)
+                        {
+                            // Save first shift sank value for later delta computation
+                            try
+                            {
+                                if (!File.Exists(prvaSmenaSankPath))
+                                {
+                                    File.WriteAllText(prvaSmenaSankPath, currentSank.ToString(CultureInfo.InvariantCulture));
+                                    WriteDebug($"btnZavrsiSmenu: Saved first shift sank value {currentSank} to prva_smena_sank.txt");
+
+                                    // Also add current first-shift sank to the running total so UI shows it immediately
+                                    decimal existing = 0;
+                                    if (File.Exists(ukupnoPath))
+                                    {
+                                        var t = File.ReadAllText(ukupnoPath);
+                                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                                        WriteDebug($"btnZavrsiSmenu: read existing ukupno from sank_ukupno.txt = {existing}");
+                                    }
+                                    else if (File.Exists(prenosSankPath))
+                                    {
+                                        var t = File.ReadAllText(prenosSankPath);
+                                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                                        WriteDebug($"btnZavrsiSmenu: read existing from prenos_sanka.txt = {existing}");
+                                    }
+                                    else if (File.Exists(sankPath))
+                                    {
+                                        var t = File.ReadAllText(sankPath);
+                                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
+                                        WriteDebug($"btnZavrsiSmenu: read existing from sank_total.txt = {existing}");
+                                    }
+
+                                    decimal newTotal = existing + currentSank;
+                                    try
+                                    {
+                                        File.WriteAllText(ukupnoPath, newTotal.ToString(CultureInfo.InvariantCulture));
+                                        try { File.WriteAllText(prenosSankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
+                                        try { File.WriteAllText(sankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
+                                        sankTotalPersisted = newTotal;
+                                        WriteDebug($"btnZavrsiSmenu: Initialized sank_ukupno to {newTotal} after first shift");
+                                        try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|firstshift|added|{currentSank}|total|{newTotal}{Environment.NewLine}"); } catch { }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        WriteDebug($"btnZavrsiSmenu: failed to write sank_ukupno on first shift: {ex.Message}");
+                                    }
+                                }
+                                else
+                                {
+                                    WriteDebug("btnZavrsiSmenu: prva_smena_sank.txt already exists, skipping initialization of sank_ukupno");
+                                }
+                            }
+                            catch (Exception ex) { WriteDebug($"btnZavrsiSmenu: failed to write prva_smena_sank.txt: {ex.Message}"); }
+                        }
+                        else if (trenutnaSmena == 2)
+                        {
+                            // Read first shift sank, compute delta = smena2 - smena1 and add to sank_ukupno
+                            decimal firstSank = 0;
+                            if (File.Exists(prvaSmenaSankPath))
+                            {
+                                var txt = File.ReadAllText(prvaSmenaSankPath);
+                                decimal.TryParse(txt, NumberStyles.Any, CultureInfo.InvariantCulture, out firstSank);
+                                WriteDebug($"btnZavrsiSmenu: read first shift sank = {firstSank} from prva_smena_sank.txt");
+                            }
+                            else
+                            {
+                                WriteDebug("btnZavrsiSmenu: prva_smena_sank.txt not found, assuming firstSank=0");
+                            }
+
+                            decimal delta = currentSank - firstSank;
+                            WriteDebug($"btnZavrsiSmenu: computed delta = currentSank({currentSank}) - firstSank({firstSank}) = {delta}");
+
+                            // read existing ukupno
                             decimal existing = 0;
                             if (File.Exists(ukupnoPath))
                             {
@@ -1269,88 +1511,40 @@ namespace ePopisV2
                                 WriteDebug($"btnZavrsiSmenu: read existing from sank_total.txt = {existing}");
                             }
 
-                            decimal newTotal = existing + currentSank;
+                            decimal newTotal = existing + delta;
                             try
                             {
                                 File.WriteAllText(ukupnoPath, newTotal.ToString(CultureInfo.InvariantCulture));
                                 try { File.WriteAllText(prenosSankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
                                 try { File.WriteAllText(sankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
                                 sankTotalPersisted = newTotal;
-                                WriteDebug($"btnZavrsiSmenu: Initialized sank_ukupno to {newTotal} after first shift");
-                                try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|firstshift|added|{currentSank}|total|{newTotal}{Environment.NewLine}"); } catch { }
+                                WriteDebug($"btnZavrsiSmenu: Updated sank_ukupno (added delta) to {newTotal}");
+                                try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|endshift|delta|{delta}|total|{newTotal}{Environment.NewLine}"); } catch { }
                             }
                             catch (Exception ex)
                             {
-                                WriteDebug($"btnZavrsiSmenu: failed to write sank_ukupno on first shift: {ex.Message}");
+                                WriteDebug($"btnZavrsiSmenu: failed to write sank_ukupno: {ex.Message}");
                             }
+
+                            // remove first shift record after processing
+                            try { if (File.Exists(prvaSmenaSankPath)) File.Delete(prvaSmenaSankPath); } catch { }
                         }
                         else
                         {
-                            WriteDebug("btnZavrsiSmenu: prva_smena_sank.txt already exists, skipping initialization of sank_ukupno");
+                            WriteDebug($"btnZavrsiSmenu: trenutnaSmena={trenutnaSmena}, no sank_ukupno action taken");
                         }
+
+                        AppendEndShiftJournalEntry(endShiftKey, "completed", currentSank.ToString(CultureInfo.InvariantCulture));
                     }
-                    catch (Exception ex) { WriteDebug($"btnZavrsiSmenu: failed to write prva_smena_sank.txt: {ex.Message}"); }
                 }
-                else if (trenutnaSmena == 2)
+                finally
                 {
-                    // Read first shift sank, compute delta = smena2 - smena1 and add to sank_ukupno
-                    decimal firstSank = 0;
-                    if (File.Exists(prvaSmenaSankPath))
-                    {
-                        var txt = File.ReadAllText(prvaSmenaSankPath);
-                        decimal.TryParse(txt, NumberStyles.Any, CultureInfo.InvariantCulture, out firstSank);
-                        WriteDebug($"btnZavrsiSmenu: read first shift sank = {firstSank} from prva_smena_sank.txt");
-                    }
-                    else
-                    {
-                        WriteDebug("btnZavrsiSmenu: prva_smena_sank.txt not found, assuming firstSank=0");
-                    }
-
-                    decimal delta = currentSank - firstSank;
-                    WriteDebug($"btnZavrsiSmenu: computed delta = currentSank({currentSank}) - firstSank({firstSank}) = {delta}");
-
-                    // read existing ukupno
-                    decimal existing = 0;
-                    if (File.Exists(ukupnoPath))
-                    {
-                        var t = File.ReadAllText(ukupnoPath);
-                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
-                        WriteDebug($"btnZavrsiSmenu: read existing ukupno from sank_ukupno.txt = {existing}");
-                    }
-                    else if (File.Exists(prenosSankPath))
-                    {
-                        var t = File.ReadAllText(prenosSankPath);
-                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
-                        WriteDebug($"btnZavrsiSmenu: read existing from prenos_sanka.txt = {existing}");
-                    }
-                    else if (File.Exists(sankPath))
-                    {
-                        var t = File.ReadAllText(sankPath);
-                        decimal.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture, out existing);
-                        WriteDebug($"btnZavrsiSmenu: read existing from sank_total.txt = {existing}");
-                    }
-
-                    decimal newTotal = existing + delta;
                     try
                     {
-                        File.WriteAllText(ukupnoPath, newTotal.ToString(CultureInfo.InvariantCulture));
-                        try { File.WriteAllText(prenosSankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
-                        try { File.WriteAllText(sankPath, newTotal.ToString(CultureInfo.InvariantCulture)); } catch { }
-                        sankTotalPersisted = newTotal;
-                        WriteDebug($"btnZavrsiSmenu: Updated sank_ukupno (added delta) to {newTotal}");
-                        try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|endshift|delta|{delta}|total|{newTotal}{Environment.NewLine}"); } catch { }
+                        if (mutexAcquired && mutex != null) mutex.ReleaseMutex();
+                        try { mutex?.Dispose(); } catch { }
                     }
-                    catch (Exception ex)
-                    {
-                        WriteDebug($"btnZavrsiSmenu: failed to write sank_ukupno: {ex.Message}");
-                    }
-
-                    // remove first shift record after processing
-                    try { if (File.Exists(prvaSmenaSankPath)) File.Delete(prvaSmenaSankPath); } catch { }
-                }
-                else
-                {
-                    WriteDebug($"btnZavrsiSmenu: trenutnaSmena={trenutnaSmena}, no sank_ukupno action taken");
+                    catch (Exception mex) { WriteDebug($"btnZavrsiSmenu: failed to release mutex: {mex.Message}"); }
                 }
             }
             catch (Exception ex)
