@@ -45,7 +45,7 @@ namespace ePopisV2
 
         private string telegramToken = "8993026912:AAE1bECC3oliaO1LCRDWu09XWt9rhA7X32U";
         private string telegramChatId = "";
- private string telegramChatIdMaja = "5813474339";
+ private string telegramChatIdMaja = "6514727840";
 
         private bool dopunaOdobrena = false;
         private bool podizanjeOdobreno = false;
@@ -166,6 +166,8 @@ namespace ePopisV2
         private class EndShiftRecord
         {
             public string Key { get; set; }
+            // business date (yyyy-MM-dd) parsed from the Key for explicitness
+            public string BusinessDate { get; set; }
             public string Status { get; set; }
             public DateTime Timestamp { get; set; }
             public int PID { get; set; }
@@ -183,6 +185,19 @@ namespace ePopisV2
                 string path = GetEndShiftJournalPath();
                 if (!File.Exists(path)) return false;
                 var lines = File.ReadAllLines(path);
+                // parse provided key parts for business date, shift and location
+                string providedDate = null; string providedShift = null; string providedLoc = null;
+                try
+                {
+                    if (!string.IsNullOrEmpty(key) && key.Contains("|"))
+                    {
+                        var kp = key.Split('|');
+                        if (kp.Length >= 1) providedDate = kp[0];
+                        if (kp.Length >= 2) providedShift = kp[1];
+                        if (kp.Length >= 3) providedLoc = kp[2];
+                    }
+                }
+                catch { }
                 foreach (var l in lines)
                 {
                     if (string.IsNullOrWhiteSpace(l)) continue;
@@ -199,7 +214,42 @@ namespace ePopisV2
                             WriteDebug($"IsEndShiftAlreadyProcessed: skipped record due to invalid hmac for key={rec.Key}");
                             continue;
                         }
-                        if (rec.Key == key)
+                        // determine business date/shift/loc from the record
+                        string recDate = null; string recShift = null; string recLoc = null;
+                        try
+                        {
+                            if (!string.IsNullOrEmpty(rec.BusinessDate)) recDate = rec.BusinessDate;
+                            else if (!string.IsNullOrEmpty(rec.Key) && rec.Key.Contains("|"))
+                            {
+                                var rkp = rec.Key.Split('|');
+                                if (rkp.Length >= 1) recDate = rkp[0];
+                                if (rkp.Length >= 2) recShift = rkp[1];
+                                if (rkp.Length >= 3) recLoc = rkp[2];
+                            }
+                            // if BusinessDate provided but shift/loc missing, try parse from rec.Key
+                            if (string.IsNullOrEmpty(recShift) && !string.IsNullOrEmpty(rec.Key) && rec.Key.Contains("|"))
+                            {
+                                var rkp2 = rec.Key.Split('|'); if (rkp2.Length >= 2) recShift = rkp2[1]; if (rkp2.Length >= 3) recLoc = rkp2[2];
+                            }
+                        }
+                        catch { }
+
+                        // If providedDate is available, only consider records that match the same business date
+                        if (!string.IsNullOrEmpty(providedDate) && !string.IsNullOrEmpty(recDate) && !string.Equals(providedDate, recDate, StringComparison.Ordinal))
+                        {
+                            // different business date -> ignore this record
+                            continue;
+                        }
+
+                        // Now check if the record corresponds to the same logical key (date+shift+loc)
+                        bool keysMatch = false;
+                        if (!string.IsNullOrEmpty(rec.Key) && rec.Key == key) keysMatch = true;
+                        else if (!string.IsNullOrEmpty(providedDate) && !string.IsNullOrEmpty(providedShift) && !string.IsNullOrEmpty(providedLoc))
+                        {
+                            if (string.Equals(recDate, providedDate, StringComparison.Ordinal) && string.Equals(recShift, providedShift, StringComparison.Ordinal) && string.Equals(recLoc, providedLoc, StringComparison.Ordinal)) keysMatch = true;
+                        }
+
+                        if (keysMatch)
                         {
                             if (string.Equals(rec.Status, "completed", StringComparison.OrdinalIgnoreCase)) return true;
                             if (string.Equals(rec.Status, "started", StringComparison.OrdinalIgnoreCase))
@@ -222,6 +272,16 @@ namespace ePopisV2
             {
                 EnsureJournalKey();
                 var rec = new EndShiftRecord { Key = key, Status = status, Timestamp = DateTime.Now, PID = Process.GetCurrentProcess().Id, User = Environment.UserName, Delta = delta, Total = total, Details = details };
+                try
+                {
+                    // extract business date from key (expected format: yyyy-MM-dd|shift|loc)
+                    if (!string.IsNullOrEmpty(key) && key.Contains("|"))
+                    {
+                        var parts = key.Split('|');
+                        if (parts.Length > 0) rec.BusinessDate = parts[0];
+                    }
+                }
+                catch { }
                 // compute hmac over payload without hmac field
                 var payload = JsonSerializer.Serialize(new EndShiftRecord { Key = rec.Key, Status = rec.Status, Timestamp = rec.Timestamp, PID = rec.PID, User = rec.User, Delta = rec.Delta, Total = rec.Total, Details = rec.Details });
                 rec.Hmac = ComputeHmacHex(payload);
@@ -1012,13 +1072,18 @@ namespace ePopisV2
 
             // Pre-confirm: show suggested breakdown and ask operator to verify separation of sank and pazar
             decimal suggestedTotal = GetSuggestedInkasacija();
-            // Total šank = persisted sank + current shift sank
+            // Total šank displayed in UI (persisted + current shift) - use textbox value to match exactly what user sees
             decimal totalSank = sankTotalPersisted + GetValue(sank);
+            string displayedSank = null;
+            try { displayedSank = string.IsNullOrWhiteSpace(depozit.Text) ? FormatujBroj(totalSank) : depozit.Text; } catch { displayedSank = FormatujBroj(totalSank); }
             // Pazar part (what will be inkasirano u banku) is the suggestedTotal (does NOT include šank)
             decimal pazarPart = suggestedTotal;
+            // use exact text from inkasacija textbox if user entered a value there
+            string displayedPazarText = null;
+            try { displayedPazarText = string.IsNullOrWhiteSpace(inkasacija.Text) ? FormatujBroj(pazarPart) : inkasacija.Text.Trim(); } catch { displayedPazarText = FormatujBroj(pazarPart); }
             var preConfirmMsg = $"Pre nego što pošaljete kod, potvrdite da ste odvojili tačan iznos za šank i pazar:\n\n" +
-                                $" - Za šank spremiti: {FormatujBroj(totalSank)} RSD\n" +
-                                $" - Za igre na sreću spremiti: {FormatujBroj(pazarPart)} RSD\n\n" +
+                                $" - Za šank spremiti: {displayedSank} RSD\n" +
+                                $" - Za igre na sreću spremiti: {displayedPazarText} RSD\n\n" +
                                 "Jeste li odvojili navedene iznose?";
 
             if (MessageBox.Show(preConfirmMsg, "Potvrda pre inkasacije", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.No)
@@ -1029,7 +1094,32 @@ namespace ePopisV2
             Random rand = new Random();
             string generisaniKod = rand.Next(10000, 99999).ToString();
             string poruka = $"🔑 *AUTORIZACIJA ZAHTEVA - INKASACIJA*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n\n🔢 *KOD ZA UNOS:* `{generisaniKod}`";
-            string porukamaja = $"🔑 *OBAVESTENJE O INKASACIJI*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n📊 *Stanje nakon inkasacije:* {FormatujBroj(trenutnoStanje - iznos)} RSD";
+            string porukamaja;
+            // If current cash is below the utvrdjeni depozit, notify Maja that a deposit top-up is required
+            try
+            {
+                decimal utvrdjeni = fiksniUtvrdjeniDepozit;
+                // if utvrdjeniDepozit textbox contains a value prefer that
+                if (!string.IsNullOrWhiteSpace(utvrdjeniDepozit.Text))
+                {
+                    var clean = new string(utvrdjeniDepozit.Text.Where(c => char.IsDigit(c) || c == '-' ).ToArray());
+                    if (decimal.TryParse(clean, out decimal parsed)) utvrdjeni = parsed;
+                }
+
+                if (trenutnoStanje < utvrdjeni)
+                {
+                    decimal deficit = utvrdjeni - trenutnoStanje;
+                    porukamaja = $"⚠️ *POTREBNA DOPUNA DEPOZITA*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n💰 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n📉 *Nedostatak:* {FormatujBroj(deficit)} RSD\n\n➡️ Potrebna dopuna: {FormatujBroj(deficit)} RSD";
+                }
+                else
+                {
+                    porukamaja = $"🔑 *OBAVESTENJE O INKASACIJI*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n📊 *Stanje nakon inkasacije:* {FormatujBroj(trenutnoStanje - iznos)} RSD";
+                }
+            }
+            catch
+            {
+                porukamaja = $"🔑 *OBAVESTENJE O INKASACIJI*\n\n📍 *Lokacija:* {lokacija.Text}\n👤 *Radnik:* {smena1.Text}\n📋 *Tip:* Inkasacija u banku\n💰 *Iznos:* {FormatujBroj(iznos)} RSD\n📊 *Trenutno stanje kase:* {FormatujBroj(trenutnoStanje)} RSD\n📊 *Stanje nakon inkasacije:* {FormatujBroj(trenutnoStanje - iznos)} RSD";
+            }
             _ = PosaljiNaTelegram(poruka);
             _ = PosaljiNaTelegramMaji(porukamaja);
 
@@ -1106,6 +1196,9 @@ namespace ePopisV2
             // later recalculations from overwriting the manual change or causing double application.
             decimal trenutnoStanje = GetValue(stanjedepnakraju);
             decimal novoStanje = trenutnoStanje - iznosInkasacije;
+            // capture displayed total sank text from UI so we record exactly what user sees
+            string displayedSankText = null;
+            try { displayedSankText = depozit.Text; if (string.IsNullOrWhiteSpace(displayedSankText)) displayedSankText = FormatujBroj(sankTotalPersisted + GetValue(sank)); } catch { displayedSankText = FormatujBroj(sankTotalPersisted + GetValue(sank)); }
 
             string zadnjaInkasacijaPath = Path.Combine(ConfigFolderPath, "zadnja_inkasacija.txt");
             // Save inkasacija with date so it is shown only on the day it was performed
@@ -1123,6 +1216,27 @@ namespace ePopisV2
                     catch { }
                 }
                 catch { }
+            // If inkasacija happens during second shift, remove any saved first-shift sank
+            try
+            {
+                if (trenutnaSmena == 2)
+                {
+                    string prvaSmenaSankPath = Path.Combine(ConfigFolderPath, "prva_smena_sank.txt");
+                    try
+                    {
+                        if (File.Exists(prvaSmenaSankPath))
+                        {
+                            File.Delete(prvaSmenaSankPath);
+                            WriteDebug($"IzvrsiInkasaciju: deleted {prvaSmenaSankPath} because inkasacija performed in second shift");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteDebug($"IzvrsiInkasaciju: failed to delete prva_smena_sank.txt: {ex.Message}");
+                    }
+                }
+            }
+            catch { }
             // Reset persisted sank total on inkasacija (reset sank_ukupno.txt)
             try
             {
@@ -1133,8 +1247,8 @@ namespace ePopisV2
                 try { File.WriteAllText(ukupnoPath, sankTotalPersisted.ToString(CultureInfo.InvariantCulture)); } catch { }
                 try { File.WriteAllText(prenosSankPath, sankTotalPersisted.ToString(CultureInfo.InvariantCulture)); } catch { }
                 try { File.WriteAllText(sankPath, sankTotalPersisted.ToString(CultureInfo.InvariantCulture)); } catch { }
-                try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|inkasacija_reset|0{Environment.NewLine}"); } catch { }
-                WriteDebug($"Sank ukupno reset to 0 after inkasacija.");
+                try { File.AppendAllText(Path.Combine(ConfigFolderPath, "sank_journal.txt"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}|inkasacija_reset|previous_total|{displayedSankText}{Environment.NewLine}"); } catch { }
+                WriteDebug($"Sank ukupno reset to 0 after inkasacija. previous_total={displayedSankText}");
             }
             catch { }
             // Clear current shift sank textbox so displayed šank becomes zero
@@ -1145,7 +1259,7 @@ namespace ePopisV2
             SnimiUTempFajl();
             IzracunajSve();
             WriteDebug($"INKASACIJA: Staro stanje={trenutnoStanje}, Inkasirano={iznosInkasacije}, Novo stanje={novoStanje}");
-            MessageBox.Show($"✅ Inkasacija uspešno obavljena!\n\nPrethodno stanje: {FormatujBroj(trenutnoStanje)} RSD\nInkasirano: {FormatujBroj(iznosInkasacije)} RSD\nNovo stanje: {FormatujBroj(novoStanje)} RSD", "Inkasacija", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show($"✅ Inkasacija uspešno obavljena!\n\nPrethodno stanje: {FormatujBroj(trenutnoStanje)} RSD\nInkasirano: {FormatujBroj(iznosInkasacije)} RSD\nNovo stanje: {FormatujBroj(novoStanje)} RSD\n\nUkupan šank pre resetovanja: {displayedSankText} RSD", "Inkasacija", MessageBoxButtons.OK, MessageBoxIcon.Information);
             inkasacija.Text = ""; inkasacijaOdobrena = false;
         }
 
@@ -1332,7 +1446,7 @@ namespace ePopisV2
 
 
             string[] podaci = {
-                DateTime.Now.ToString("dd.MM.yyyy"), smena1.Text, lokacija.Text, kodlokacije.Text,
+                dateTimePicker1.Value.ToString("dd.MM.yyyy"), smena1.Text, lokacija.Text, kodlokacije.Text,
                 trenutnaSmena.ToString(),
                 trenutnaSmena == 2 ? originalKazino.ToString() : kazino.Text,
                 trenutnaSmena == 2 ? originalKladionica.ToString() : kladionica.Text,
@@ -1911,7 +2025,7 @@ namespace ePopisV2
                 }
 
                 string[] p2 = {
-            DateTime.Now.ToString("dd.MM.yyyy"), smena1.Text, lokacija.Text, kodlokacije.Text,
+            dateTimePicker1.Value.ToString("dd.MM.yyyy"), smena1.Text, lokacija.Text, kodlokacije.Text,
             trenutnaSmena.ToString(),
             matematickiKazino.ToString(), matematickiKladionica.ToString(), matematickiLbet.ToString(), matematickiSank.ToString(),
             dopuna.Text, podizanje.Text, ukupniTroskovi.ToString(), depozit.Text, depozit1.Text,
@@ -1946,8 +2060,29 @@ namespace ePopisV2
                 }
                 catch { }
 
-                string monthlyFolder = GetMonthlyFolderPath();
-                string fileName = $"Dnevni_Izvestaj_{dateTimePicker1.Value.ToString("dd_MM_yyyy")}.html";
+                // Prefer the date from the first shift (p1[0]) when available so reports use the day of the first shift
+                DateTime reportDate = dateTimePicker1.Value;
+                try
+                {
+                    if (p1 != null && p1.Length > 0 && !string.IsNullOrWhiteSpace(p1[0]))
+                    {
+                        if (DateTime.TryParseExact(p1[0], "dd.MM.yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsed))
+                        {
+                            reportDate = parsed;
+                        }
+                    }
+                }
+                catch { }
+
+                string mesecGodina = reportDate.ToString("yyyy_MM");
+                string mesecNaziv = reportDate.ToString("MMMM");
+                string monthlyFolder = Path.Combine(GlavniFolderPath, mesecGodina + "_" + mesecNaziv);
+                if (!Directory.Exists(monthlyFolder))
+                {
+                    Directory.CreateDirectory(monthlyFolder);
+                }
+
+                string fileName = $"Dnevni_Izvestaj_{reportDate.ToString("dd_MM_yyyy")}.html";
                 string path = Path.Combine(monthlyFolder, fileName);
 
                 // Compute fresh pazar values (do not modify original parsed ones) for use in the HTML tables
